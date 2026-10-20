@@ -23,8 +23,11 @@ import {
   type ScanProgress,
 } from "./lib/scanner";
 import { createDetectPool, type DetectPool } from "./lib/detect-pool";
+
+/** Smallest scan worth starting detection workers for (see startScan). */
+const POOL_MIN_BLOCKS = 50;
 import { fetchChainTip } from "./lib/explorer";
-import { deriveL2Identity, fetchL2Balances, type L2Identity } from "./lib/l2";
+import { burnClaimedOnOotle, deriveL2Identity, fetchL2Balances, fetchL2Deposits, type L2Identity } from "./lib/l2";
 import { attributePayment, deriveSubAddress, type SubAddress } from "./lib/subaddress";
 import { wipeOotleState, type TokenBalance } from "./ootle";
 import { decryptWithPin, encryptWithPin, type EncryptedBlob } from "./lib/pinLock";
@@ -35,11 +38,13 @@ import {
   nodeById,
   nodesForNetwork,
   pingNode,
-  rpcKernelMerkleProof,
+  rpcBurnOutputProof,
   selectFastestNodeFor,
   setSelectedNodeId,
 } from "./lib/rpc";
-import { CLAIM_RETRY_MS, burnClaimableNow, claimProofFor, isRetryableClaimError, type BurnRecord } from "./lib/burn";
+import { CLAIM_MIN_CONFIRMATIONS, burnClaimableNow, burnConfirmations, claimProofFor, claimRetryDelayMs, isRetryableClaimError, type BurnRecord } from "./lib/burn";
+import { hasPendingL2, logL2, receiptKnown, receiptsSeeded, recordReceipts, withL2Log } from "./lib/l2history";
+import type { ScannedStealthOutput } from "@chironbuilder/ootle-sdk";
 
 const STORAGE_KEY = "tari-l1-wallet/v1";
 
@@ -366,6 +371,27 @@ interface Store {
 }
 
 const StoreCtx = createContext<Store | null>(null);
+
+/** One history entry per private output a scan turned up (keyed by commitment, so never twice). */
+function logPrivateReceipts(identity: L2Identity, found: ScannedStealthOutput[], balances: { resourceAddress: string; divisibility: number; symbol: string | null }[]) {
+  recordReceipts(
+    identity.address,
+    found.map((o) => {
+      const meta = balances.find((b) => b.resourceAddress === o.resourceAddress);
+      return {
+        key: `priv:${o.commitment}`,
+        entry: {
+          kind: "receivedPrivately" as const,
+          amount: o.amount.toString(),
+          divisibility: meta?.divisibility ?? 6,
+          symbol: meta?.symbol ?? undefined,
+          transactionId: o.transactionId,
+          note: o.memo || undefined,
+        },
+      };
+    }),
+  );
+}
 
 export function useStore(): Store {
   const s = useContext(StoreCtx);
@@ -1037,6 +1063,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return Array.from(key, (b) => b.toString(16).padStart(2, "0")).join("");
   }, [backupHex]);
 
+  /** A burn the chain shows as claimed that this wallet didn't claim itself. */
+  const markClaimedElsewhere = useCallback((id: string, valueMicro?: bigint) => {
+    setBurns((b) =>
+      b.map((r) =>
+        r.id === id && r.status !== "claimed"
+          ? {
+              ...r,
+              status: "claimed",
+              claimedElsewhere: true,
+              claimedMicro: valueMicro !== undefined ? valueMicro.toString() : r.amountMicro,
+              lastError: undefined,
+            }
+          : r,
+      ),
+    );
+  }, []);
+
   const claimBurn = useCallback(
     async (id: string, manual: boolean) => {
       const rec = burnsRef.current.find((r) => r.id === id);
@@ -1049,49 +1092,97 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       );
       try {
         const identity = await deriveL2Identity(backupHex);
-        const { transactionId, claimedAmount } = await identity.account.claimBurn(proof);
+        const entry = { kind: "claimBurn" as const, amount: rec.amountMicro, divisibility: 6, symbol: "tTARI" };
+        // An automatic attempt that fails is just the wallet checking again, not something the user
+        // did, so only a manual claim's failures go into the Ootle history; a claim that lands is
+        // logged either way.
+        const { transactionId, claimedAmount } = manual
+          ? await withL2Log(identity.address, entry, () => identity.account.claimBurn(proof))
+          : await identity.account.claimBurn(proof).then((r) => {
+              logL2(identity.address, { ...entry, status: "done", transactionId: r.transactionId });
+              return r;
+            });
         setBurns((b) =>
           b.map((r) =>
             r.id === id
-              ? { ...r, status: "claimed", claimTxId: transactionId, claimedMicro: claimedAmount.toString() }
+              ? { ...r, status: "claimed", claimTxId: transactionId, claimedMicro: claimedAmount.toString(), autoAttempts: 0 }
               : r,
           ),
         );
         refreshL2Ref.current();
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        // Claimed already -- by another wallet holding the proof, or an earlier attempt that did land.
+        if (/already claimed/i.test(message)) {
+          markClaimedElsewhere(id);
+          return;
+        }
         // The burn stays claimable whatever went wrong, so it returns to waiting either way.
-        setBurns((b) => b.map((r) => (r.id === id ? { ...r, status: "mined", lastError: message } : r)));
+        setBurns((b) =>
+          b.map((r) =>
+            r.id === id ? { ...r, status: "mined", lastError: message, autoAttempts: manual ? r.autoAttempts : (r.autoAttempts ?? 0) + 1 } : r,
+          ),
+        );
         if (manual) throw isRetryableClaimError(message) ? new Error(`Not claimable yet: ${message}`) : e;
       } finally {
         claimingRef.current.delete(id);
       }
     },
-    [backupHex],
+    [backupHex, markClaimedElsewhere],
   );
 
   const claimBurnNow = useCallback((id: string) => claimBurn(id, true), [claimBurn]);
 
   /**
-   * Moves each burn along: a broadcast burn is mined once its kernel has a merkle proof, and a
+   * Moves each burn along: a broadcast burn is mined once the node has its output proof, and a
    * mined burn to this wallet's own account is claimed automatically, retried on a slow cadence
    * because validators only accept it once the L1 block is well confirmed.
    */
+  const tipHeightRef = useRef(tipHeight);
+  tipHeightRef.current = tipHeight;
+
   const advanceBurns = useCallback(async () => {
     for (const rec of burnsRef.current) {
-      const needsProof = rec.status === "broadcast" || (rec.status === "external" && !rec.merkle);
+      // A burn this wallet hasn't seen claimed may have been claimed elsewhere (the proof exported
+      // to another wallet, or the same seed in another browser). The chain is the authority.
+      if (
+        burnClaimableNow(network) &&
+        rec.outputProof &&
+        (rec.status === "mined" ||
+          rec.status === "external" ||
+          // "Claiming" left behind by a page closed mid-claim: nothing in flight here any more.
+          (rec.status === "claiming" && !claimingRef.current.has(rec.id)))
+      ) {
+        try {
+          const claimed = await burnClaimedOnOotle(rec.parts.commitmentHex);
+          if (claimed !== null) {
+            markClaimedElsewhere(rec.id, claimed);
+            continue;
+          }
+          if (rec.status === "claiming") {
+            setBurns((b) => b.map((r) => (r.id === rec.id && r.status === "claiming" ? { ...r, status: "mined" } : r)));
+            continue;
+          }
+        } catch {
+          /* indexer unreachable: decide nothing this pass */
+        }
+      }
+      // A burn mined before Ootle 0.42 has only a kernel proof, which claims no longer use; it
+      // fetches its output proof like a new one.
+      const needsProof =
+        rec.status === "broadcast" || ((rec.status === "external" || rec.status === "mined") && !rec.outputProof);
       if (needsProof) {
         try {
-          const merkle = await rpcKernelMerkleProof(rec.parts.kernel.nonceHex, rec.parts.kernel.signatureHex);
-          if (merkle) {
-            const { block_height, ...proof } = merkle;
+          const proof = await rpcBurnOutputProof(rec.parts.commitmentHex);
+          if (proof) {
+            const height = proof.block_height == null ? undefined : Number(proof.block_height);
             setBurns((b) =>
               b.map((r) =>
                 r.id === rec.id
                   ? {
                       ...r,
-                      merkle: proof,
-                      minedHeight: block_height ?? undefined,
+                      outputProof: proof,
+                      minedHeight: height ?? r.minedHeight,
                       status: r.status === "external" ? "external" : "mined",
                       // Counts as an attempt so the first claim waits for the block to settle.
                       lastAttemptAt: Date.now(),
@@ -1107,18 +1198,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         rec.status === "mined" &&
         rec.toOwnAccount &&
         burnClaimableNow(network) &&
-        Date.now() - (rec.lastAttemptAt ?? 0) >= CLAIM_RETRY_MS
+        // Not before validators can see the block (unknown depth: fall back to the retry delay alone).
+        (burnConfirmations(rec, tipHeightRef.current) ?? CLAIM_MIN_CONFIRMATIONS) >= CLAIM_MIN_CONFIRMATIONS &&
+        Date.now() - (rec.lastAttemptAt ?? 0) >= claimRetryDelayMs(rec.autoAttempts ?? 0)
       ) {
         void claimBurn(rec.id, false);
       }
     }
-  }, [claimBurn, network]);
+  }, [claimBurn, markClaimedElsewhere, network]);
 
   const burnsInFlight = burns.some(
     (r) =>
       r.status === "broadcast" ||
       (r.status === "mined" && r.toOwnAccount && burnClaimableNow(network)) ||
-      (r.status === "external" && !r.merkle),
+      ((r.status === "external" || r.status === "mined") && !r.outputProof) ||
+      // Burns out for someone else to claim: watch for the claim landing.
+      (r.status === "external" && burnClaimableNow(network)) ||
+      (r.status === "claiming" && burnClaimableNow(network)),
   );
   useEffect(() => {
     if (!ready || !wallet || walletLocked || !burnsInFlight) return;
@@ -1188,6 +1284,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     void (async () => {
       try {
         const identity = await deriveL2Identity(backupHex);
+        // Private outputs spent from another wallet on this seed are still listed locally until
+        // checked; drop them so the private balance is the real one. Best-effort.
+        await identity.account.pruneSpentShieldedOutputs().catch(() => 0);
         const { balances, error } = await fetchL2Balances(identity.account);
         setL2({ identity, balances, loading: false, error });
       } catch (e) {
@@ -1214,9 +1313,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (!account) return 0;
     setL2((prev) => ({ ...prev, loading: true }));
     try {
-      const { claimed } = await account.scanForPrivatePayments();
+      const { claimed, found } = await account.scanForPrivatePayments();
       const { balances, error } = await fetchL2Balances(account);
       setL2((prev) => ({ ...prev, balances, error, loading: false }));
+      logPrivateReceipts(l2.identity!, found, balances);
       return claimed;
     } catch (e) {
       setL2((prev) => ({
@@ -1227,6 +1327,68 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return 0;
     }
   }, [l2.identity]);
+
+  /**
+   * Adds what the account received to its Ootle history: public deposits into its vaults, and
+   * private (stealth) payments found by a short scan of recent transactions. The first pass for an
+   * account backfills what is already on chain as undated entries; later passes date what they find.
+   */
+  const receiptsBusy = useRef(false);
+  const syncL2Receipts = useCallback(async () => {
+    const identity = l2.identity;
+    if (!identity || receiptsBusy.current) return;
+    receiptsBusy.current = true;
+    try {
+      const backfill = !receiptsSeeded(identity.address);
+      let added = 0;
+      let balances = l2.balances;
+      // A send of this wallet's own still in flight has no transaction id yet, so its effect on the
+      // vault can't be told from a receipt; leave the vaults for the next pass.
+      if (!hasPendingL2(identity.address)) {
+        const deposits = await fetchL2Deposits(identity, (key) => receiptKnown(identity.address, key));
+        added += recordReceipts(
+          identity.address,
+          deposits.map((d) => {
+            const meta = balances.find((b) => b.resourceAddress === d.resourceAddress);
+            return {
+              key: d.key,
+              at: d.at,
+              entry: {
+                kind: "received" as const,
+                amount: d.net.toString(),
+                divisibility: meta?.divisibility ?? 6,
+                symbol: meta?.symbol ?? undefined,
+                transactionId: d.transactionId,
+              },
+            };
+          }),
+          backfill,
+        );
+      }
+      const { found } = await identity.account.scanForPrivatePayments(3);
+      const pruned = await identity.account.pruneSpentShieldedOutputs().catch(() => 0);
+      if (found.length > 0 || added > 0 || pruned > 0) {
+        const fresh = await fetchL2Balances(identity.account);
+        balances = fresh.balances;
+        setL2((prev) => ({ ...prev, balances: fresh.balances, error: fresh.error }));
+      }
+      logPrivateReceipts(identity, found, balances);
+    } catch {
+      /* indexer unreachable: try again next pass */
+    } finally {
+      receiptsBusy.current = false;
+    }
+  }, [l2.identity, l2.balances]);
+  const syncL2ReceiptsRef = useRef(syncL2Receipts);
+  syncL2ReceiptsRef.current = syncL2Receipts;
+
+  const l2Address = l2.identity?.address;
+  useEffect(() => {
+    if (layer !== "L2" || !l2Address) return;
+    void syncL2ReceiptsRef.current();
+    const id = setInterval(() => void syncL2ReceiptsRef.current(), 45_000);
+    return () => clearInterval(id);
+  }, [layer, l2Address]);
 
   const setLayer = useCallback(
     (next: Layer) => {
@@ -1329,11 +1491,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // workers rather than on the thread that paints. Each costs a wasm instance, which is why
       // the pool lives for one scan and is torn down at the end rather than kept warm.
       const poolRef: { current: DetectPool | null } = { current: null };
-      if (backupHex) {
+      // Set once the scan has ended, so a pool that only comes up afterwards is torn down instead
+      // of left running: each worker holds a wasm instance, and the catch-up scans that follow the
+      // tip (one or two blocks, every new block) used to finish before their pool started, leaking
+      // a pool per block until the tab ran out of memory for new wasm instances.
+      let scanEnded = false;
+      // A few blocks scan quickly on the main thread; workers only pay off on a real backlog.
+      if (backupHex && to - from + 1 >= POOL_MIN_BLOCKS) {
         // Deliberately not awaited: the scan starts now on the main thread and switches to the
         // workers the moment they are up. A pool that never starts costs some speed, never the scan.
         void createDetectPool(backupHex, network ?? "mainnet", scanThreads)
-          .then((p) => { poolRef.current = p; })
+          .then((p) => {
+            if (scanEnded) p.dispose();
+            else poolRef.current = p;
+          })
           .catch(() => { poolRef.current = null; });
       }
       void scanRange(
@@ -1406,6 +1577,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           error: e instanceof Error ? e.message : String(e),
         }))
         .then((final) => {
+        scanEnded = true;
         poolRef.current?.dispose();
         poolRef.current = null;
         setScan(final);

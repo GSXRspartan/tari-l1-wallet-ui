@@ -7,6 +7,7 @@ import {
 } from "react";
 import { Check, Copy, Loader2, X } from "lucide-react";
 import { copyText } from "../lib/format";
+import { t } from "../i18n";
 
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -154,16 +155,20 @@ export function Segmented<T extends string>({
   onChange,
   options,
   className,
+  fill = false,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: Array<{ value: T; label: ReactNode }>;
   className?: string;
+  /** Stretch across the container, sharing the width equally, instead of sizing to the labels. */
+  fill?: boolean;
 }) {
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border border-[var(--tari-border)] bg-[var(--tari-bg-input)] p-1",
+        "items-center gap-1 rounded-full border border-[var(--tari-border)] bg-[var(--tari-bg-input)] p-1",
+        fill ? "flex w-full" : "inline-flex max-w-full",
         className,
       )}
     >
@@ -172,7 +177,8 @@ export function Segmented<T extends string>({
           key={o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all",
+            "rounded-full py-1.5 text-xs font-semibold whitespace-nowrap transition-all",
+            fill ? "min-w-0 flex-1 px-1.5" : "px-3.5",
             value === o.value
               ? "btn-primary shadow"
               : "text-[var(--tari-text-dim)] hover:text-[var(--tari-text)]",
@@ -271,7 +277,7 @@ export function Modal({
               <button
                 onClick={onClose}
                 className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-[var(--tari-text)]"
-                aria-label="Close"
+                aria-label={t("ui.close")}
               >
                 <X size={18} />
               </button>
@@ -311,7 +317,7 @@ export function CopyButton({
       }}
     >
       {ok ? <Check size={14} className="text-[var(--st-green)]" /> : <Copy size={14} />}
-      {label ?? (ok ? "Copied" : "Copy")}
+      {label ?? (ok ? t("ui.copied") : t("ui.copy"))}
     </Button>
   );
 }
@@ -380,7 +386,7 @@ export function NodeStatusDot({
 }) {
   const color =
     status === "online" ? "var(--st-green)" : status === "offline" ? "var(--st-red)" : "var(--st-amber)";
-  const label = status === "online" ? "Connected" : status === "offline" ? "Not connected" : "Checking connection";
+  const label = status === "online" ? t("ui.connected") : status === "offline" ? t("ui.notConnected") : t("ui.checkingConnection");
   return (
     <span
       role="img"

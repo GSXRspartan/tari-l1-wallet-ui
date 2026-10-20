@@ -1,11 +1,17 @@
 import { useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, ChevronLeft, Droplets, FileInput, Grid3x3, Layers, Loader2, Lock, RefreshCw, Search, TriangleAlert, Wallet } from "lucide-react";
+import { collapseClass, useCollapseOnScroll } from "../lib/useCollapseOnScroll";
+import { ArrowDownLeft, ArrowUpRight, ChevronLeft, ChevronRight, EyeOff, Eye, FileInput, Grid3x3, Layers, Loader2, Lock, RefreshCw, Search, TriangleAlert, Wallet } from "lucide-react";
 import { useStore } from "../store";
 import { TARI_RESOURCE_ADDRESS, formatResourceAmount, type TokenBalance } from "../ootle";
 import { truncMiddle } from "../lib/format";
 import { networkLabel } from "../lib/tari";
 import { useToast } from "./toast";
-import { ActionTiles, Button, CopyButton, EmptyState } from "./ui";
+import { useI18n } from "../i18n";
+import { ActionTiles, Button, CopyButton, EmptyState, Segmented } from "./ui";
+
+type L2Tab = "balances" | "activity";
+import { useL2History } from "../lib/l2history";
+import { L2ActivityRow } from "./L2ActivityPanel";
 
 /**
  * The Ootle (L2) view, laid out to mirror the L1 wallet column: balance card on top, holdings
@@ -19,13 +25,17 @@ export function L2Panel({
   onOpenPanel,
 }: {
   /** Opens one of the Dashboard's floating panels — the same host the L1 send/receive use. */
-  onOpenPanel: (panel: "l2send" | "l2receive" | "dapps" | "claimburn") => void;
+  onOpenPanel: (panel: "l2send" | "l2shield" | "l2unshield" | "l2receive" | "l2activity" | "dapps" | "claimburn") => void;
 }) {
   const store = useStore();
   const toast = useToast();
-  const [claiming, setClaiming] = useState(false);
+  const { t } = useI18n();
   const [scanning, setScanning] = useState(false);
   const { identity, balances, loading, error } = store.l2;
+  const activity = useL2History(identity?.address);
+  const [tab, setTab] = useState<L2Tab>("balances");
+  const collapse = useCollapseOnScroll();
+  const actionsOpen = collapse.open;
 
   const headline = pickHeadline(balances);
 
@@ -41,33 +51,16 @@ export function L2Panel({
       const claimed = await store.scanL2PrivateFunds();
       toast({
         tone: claimed > 0 ? "success" : "info",
-        title: claimed > 0 ? `Found ${claimed} private output(s)` : "Nothing new found",
-        message: claimed > 0 ? "Your private balance has been updated." : "No unrecorded shielded funds on this account.",
+        title: claimed > 0 ? t("l2.foundOutputs", { n: claimed }) : t("l2.nothingNew"),
+        message: claimed > 0 ? t("l2.privateUpdated") : t("l2.noUnrecorded"),
       });
     } finally {
       setScanning(false);
     }
   }
 
-  async function claim() {
-    if (!identity || claiming) return;
-    setClaiming(true);
-    try {
-      await identity.account.claimTestnetXtr();
-      toast({ tone: "success", title: "Test TARI claimed", message: "Refreshing your balances…" });
-      store.refreshL2();
-    } catch (e) {
-      toast({
-        tone: "error",
-        title: "Claim failed",
-        message: e instanceof Error ? e.message.slice(0, 160) : String(e),
-      });
-    }
-    setClaiming(false);
-  }
-
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex min-h-0 flex-1 flex-col gap-2.5">
       {/* Ootle balance card — same shape as the L1 card */}
       <div className="wallet-card p-4">
         <div className="flex items-center justify-between">
@@ -78,9 +71,9 @@ export function L2Panel({
             >
               <Layers size={13} />
             </span>
-            <span className="text-sm font-bold">Ootle L2</span>
+            <span className="text-sm font-bold">{t("l2.ootleL2")}</span>
             <span className="rounded-full bg-black/30 px-2 py-0.5 text-[9px] font-bold tracking-wide uppercase opacity-90">
-              testnet
+              {t("l2.testnet")}
             </span>
           </div>
           {identity && (
@@ -96,7 +89,7 @@ export function L2Panel({
           {loading && balances.length === 0 ? (
             <span className="inline-flex items-center gap-2 text-base font-bold opacity-80">
               <Loader2 size={16} className="animate-spin" />
-              Loading…
+              {t("common.loading")}
             </span>
           ) : (
             <>
@@ -105,15 +98,17 @@ export function L2Panel({
             </>
           )}
         </p>
-        <p className="mt-1 text-[11px] opacity-70">Revealed balance</p>
+        <p className="mt-1 text-[11px] opacity-70">{t("l2.revealedBalance")}</p>
 
         {/* Private funds sit in the same vault but are only visible to this account's view key, so
             they get their own line rather than being folded into the number above. */}
         {headline && headline.confidentialAmount > 0n && (
           <p className="tabular mt-0.5 flex items-center gap-1 text-[10px] opacity-70">
             <Lock size={9} />
-            {formatResourceAmount(headline.confidentialAmount, headline.divisibility)}{" "}
-            {headline.symbol ?? "TARI"} private
+            {t("l2.privateSuffix", {
+              amount: formatResourceAmount(headline.confidentialAmount, headline.divisibility),
+              symbol: headline.symbol ?? "TARI",
+            })}
           </p>
         )}
 
@@ -122,129 +117,189 @@ export function L2Panel({
           className="mt-3 flex w-full items-center justify-between rounded-xl bg-black/25 px-3 py-2 text-left transition-colors hover:bg-black/35"
         >
           <span className="flex items-center gap-2 text-xs font-bold">
-            <ChevronLeft size={14} /> Back to Tari L1
+            <ChevronLeft size={14} /> {t("l2.backToL1")}
           </span>
           <span className="text-[10px] opacity-70">{networkLabel(store.network)}</span>
         </button>
 
-        <button
-          onClick={() => void findPrivate()}
-          disabled={scanning || !identity}
-          className="mt-1.5 flex w-full items-center justify-between rounded-xl bg-black/25 px-3 py-2 text-left transition-colors hover:bg-black/35 disabled:opacity-60"
+        {/* Folds away while the list below is scrolled down, back on scrolling up: the list gets the room. */}
+        <div
+          className={collapseClass(actionsOpen)}
+          aria-hidden={!actionsOpen}
+          inert={!actionsOpen}
         >
-          <span className="flex items-center gap-2 text-xs font-bold">
-            {scanning ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-            {scanning ? "Scanning…" : "Find private funds"}
-          </span>
-          <span className="text-[10px] opacity-70">shielded</span>
-        </button>
+          <div className="min-h-0 overflow-hidden">
+            <button
+              onClick={() => void findPrivate()}
+              disabled={scanning || !identity}
+              className="mt-1.5 flex w-full items-center justify-between rounded-xl bg-black/25 px-3 py-2 text-left transition-colors hover:bg-black/35 disabled:opacity-60"
+            >
+              <span className="flex items-center gap-2 text-xs font-bold">
+                {scanning ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                {scanning ? t("dash.scanning") : t("l2.findPrivate")}
+              </span>
+              <span className="text-[10px] opacity-70">{t("l2.shieldedTag")}</span>
+            </button>
 
-        <button
-          onClick={() => void claim()}
-          disabled={claiming || !identity}
-          className="mt-1.5 flex w-full items-center justify-between rounded-xl bg-black/25 px-3 py-2 text-left transition-colors hover:bg-black/35 disabled:opacity-60"
-        >
-          <span className="flex items-center gap-2 text-xs font-bold">
-            {claiming ? <Loader2 size={14} className="animate-spin" /> : <Droplets size={14} />}
-            {claiming ? "Claiming…" : "Claim test TARI"}
-          </span>
-          <span className="text-[10px] opacity-70">faucet</span>
-        </button>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => onOpenPanel("l2shield")}
+                disabled={!identity}
+                title={t("l2.shieldTitle")}
+                className="flex min-w-0 items-center justify-center gap-2 rounded-xl bg-black/25 px-3 py-2 text-xs font-bold transition-colors hover:bg-black/35 disabled:opacity-60"
+              >
+                <EyeOff size={14} className="shrink-0" /> <span className="truncate">{t("l2.shield")}</span>
+              </button>
+              <button
+                onClick={() => onOpenPanel("l2unshield")}
+                disabled={!identity}
+                title={t("l2.unshieldTitle")}
+                className="flex min-w-0 items-center justify-center gap-2 rounded-xl bg-black/25 px-3 py-2 text-xs font-bold transition-colors hover:bg-black/35 disabled:opacity-60"
+              >
+                <Eye size={14} className="shrink-0" /> <span className="truncate">{t("l2.unshield")}</span>
+              </button>
+            </div>
 
-        <button
-          onClick={() => onOpenPanel("claimburn")}
-          disabled={!identity}
-          className="mt-1.5 flex w-full items-center justify-between rounded-xl bg-black/25 px-3 py-2 text-left transition-colors hover:bg-black/35 disabled:opacity-60"
-        >
-          <span className="flex items-center gap-2 text-xs font-bold">
-            <FileInput size={14} /> Claim an L1 burn
-          </span>
-          <span className="text-[10px] opacity-70">from proof</span>
-        </button>
+            <button
+              onClick={() => onOpenPanel("claimburn")}
+              disabled={!identity}
+              className="mt-1.5 flex w-full items-center justify-between rounded-xl bg-black/25 px-3 py-2 text-left transition-colors hover:bg-black/35 disabled:opacity-60"
+            >
+              <span className="flex items-center gap-2 text-xs font-bold">
+                <FileInput size={14} /> {t("l2.claimBurn")}
+              </span>
+              <span className="text-[10px] opacity-70">{t("l2.fromProof")}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <ActionTiles
         actions={[
-          { label: "Send", icon: <ArrowUpRight size={16} />, onClick: () => onOpenPanel("l2send"), disabled: !identity },
-          { label: "Receive", icon: <ArrowDownLeft size={16} />, onClick: () => onOpenPanel("l2receive"), disabled: !identity },
-          { label: "Apps", icon: <Grid3x3 size={16} />, onClick: () => onOpenPanel("dapps"), title: "Ootle apps" },
+          { label: t("l2.send"), icon: <ArrowUpRight size={16} />, onClick: () => onOpenPanel("l2send"), disabled: !identity },
+          { label: t("l2.receive"), icon: <ArrowDownLeft size={16} />, onClick: () => onOpenPanel("l2receive"), disabled: !identity },
+          { label: t("l2.apps"), icon: <Grid3x3 size={16} />, onClick: () => onOpenPanel("dapps"), title: t("dash.ootleApps") },
         ]}
       />
 
-      <div className="flex items-center justify-between px-1 pt-1">
-        <span className="text-sm font-bold text-[var(--tari-text)]">Balances</span>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="!px-1.5"
-          loading={loading}
-          onClick={() => store.refreshL2()}
-          aria-label="Refresh balances"
-        >
-          <RefreshCw size={12} />
-        </Button>
+      <div className="flex items-center justify-between gap-2 px-1 pt-1">
+        <Segmented
+          value={tab}
+          onChange={(v) => {
+            setTab(v as L2Tab);
+            collapse.reset();
+          }}
+          options={[
+            { value: "balances", label: t("l2tabs.balances") },
+            { value: "activity", label: `${t("l2tabs.activity")}${activity.length ? ` · ${activity.length}` : ""}` },
+          ]}
+        />
+        {tab === "balances" ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="!px-1.5"
+            loading={loading}
+            onClick={() => store.refreshL2()}
+            aria-label={t("l2.refreshBalances")}
+          >
+            <RefreshCw size={12} />
+          </Button>
+        ) : (
+          <button
+            onClick={() => onOpenPanel("l2activity")}
+            className="flex items-center gap-0.5 text-xs font-semibold whitespace-nowrap text-zinc-500 hover:text-[var(--tari-text)]"
+          >
+            {t("l2hist.viewAll")} <ChevronRight size={12} />
+          </button>
+        )}
       </div>
 
-      {error ? (
-        <div className="flex items-start gap-2.5 rounded-2xl border border-red-500/25 bg-red-500/10 p-4 text-xs text-[var(--st-red)]">
-          <TriangleAlert size={15} className="mt-0.5 shrink-0" />
-          <div>
-            <p className="font-bold">Could not reach the Ootle indexer</p>
-            <p className="mt-1 break-all opacity-80">{error}</p>
-          </div>
-        </div>
-      ) : loading && balances.length === 0 ? (
-        <p className="py-6 text-center text-xs text-zinc-500">Loading balances…</p>
-      ) : balances.length === 0 ? (
-        <EmptyState
-          icon={<Wallet size={20} />}
-          title="No balances"
-          sub="This account holds no Ootle funds yet. Claim test TARI from the faucet, or burn tXTM from layer 1."
-        />
-      ) : (
-        <div className="space-y-2.5">
-          {balances.map((b) => (
-            <div
-              key={b.resourceAddress}
-              className="flex items-center justify-between gap-4 rounded-2xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)] px-4 py-3"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-bold text-[var(--tari-text)]">
-                  {b.symbol ?? b.name ?? truncMiddle(b.resourceAddress, 10, 6)}
-                </p>
-                <p className="mt-0.5 text-[11px] text-zinc-500">
-                  {b.kind}
-                  {b.confidentialDecryptFailures > 0
-                    ? ` · ${b.confidentialDecryptFailures} commitment(s) failed to decrypt`
-                    : ""}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="tabular font-mono text-sm font-bold text-[var(--tari-text)]">
-                  {b.kind === "NonFungible"
-                    ? // Indivisible by definition — the count itself, never run through
-                      // formatResourceAmount()'s divisibility math (that produced "0" here before
-                      // this vault kind was handled: NonFungible has no `.amount` field at all).
-                      `${b.amount.toString()} ${b.amount === 1n ? "NFT" : "NFTs"}`
-                    : formatResourceAmount(b.amount, b.divisibility)}
-                </p>
-                {b.kind === "NonFungible" && b.nonFungibleTokenIds && b.nonFungibleTokenIds.length > 0 && (
-                  <p className="mt-0.5 truncate text-[11px] text-zinc-500" title={b.nonFungibleTokenIds.join(", ")}>
-                    {b.nonFungibleTokenIds.slice(0, 3).join(", ")}
-                    {b.nonFungibleTokenIds.length > 3 ? `, +${b.nonFungibleTokenIds.length - 3} more` : ""}
-                  </p>
-                )}
-                {b.confidentialAmount > 0n && (
-                  <p className="tabular mt-0.5 flex items-center justify-end gap-1 font-mono text-[11px] text-[var(--st-violet)]">
-                    <Lock size={9} />
-                    {formatResourceAmount(b.confidentialAmount, b.divisibility)} private
-                  </p>
-                )}
+      {/* Each tab scrolls on its own, so a long list never pushes the other out of reach. */}
+      <div
+        key={tab}
+        className="min-h-[96px] flex-1 overflow-y-auto overscroll-contain pr-0.5"
+        onScroll={(e) => collapse.onScroll(e.currentTarget)}
+      >
+        {tab === "activity" ? (
+          activity.length === 0 ? (
+            <p className="rounded-2xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)] px-4 py-3 text-xs text-zinc-500">
+              {t("l2hist.emptyTitle")}
+            </p>
+          ) : (
+            <div className="divide-y divide-[var(--tari-border)] overflow-hidden rounded-2xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)]">
+              {activity.map((e) => (
+                <button key={e.id} className="block w-full text-left hover:opacity-90" onClick={() => onOpenPanel("l2activity")}>
+                  <L2ActivityRow e={e} compact />
+                </button>
+              ))}
+            </div>
+          )
+        ) : (
+          <>
+          {error ? (
+            <div className="flex items-start gap-2.5 rounded-2xl border border-red-500/25 bg-red-500/10 p-4 text-xs text-[var(--st-red)]">
+              <TriangleAlert size={15} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-bold">{t("l2.indexerUnreachable")}</p>
+                <p className="mt-1 break-all opacity-80">{error}</p>
               </div>
             </div>
-          ))}
-        </div>
-      )}
+          ) : loading && balances.length === 0 ? (
+            <p className="py-6 text-center text-xs text-zinc-500">{t("l2.loadingBalances")}</p>
+          ) : balances.length === 0 ? (
+            <EmptyState
+              icon={<Wallet size={20} />}
+              title={t("l2.noBalances")}
+              sub={t("l2.noFundsYet")}
+            />
+          ) : (
+            <div className="space-y-2.5">
+              {balances.map((b) => (
+                <div
+                  key={b.resourceAddress}
+                  className="flex items-center justify-between gap-4 rounded-2xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)] px-4 py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-bold text-[var(--tari-text)]">
+                      {b.symbol ?? b.name ?? truncMiddle(b.resourceAddress, 10, 6)}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-zinc-500">
+                      {b.kind}
+                      {b.confidentialDecryptFailures > 0
+                        ? t("l2.decryptFailures", { n: b.confidentialDecryptFailures })
+                        : ""}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="tabular font-mono text-sm font-bold text-[var(--tari-text)]">
+                      {b.kind === "NonFungible"
+                        ? // Indivisible by definition — the count itself, never run through
+                          // formatResourceAmount()'s divisibility math (that produced "0" here before
+                          // this vault kind was handled: NonFungible has no `.amount` field at all).
+                          `${b.amount.toString()} ${b.amount === 1n ? t("l2.nft") : t("l2.nfts")}`
+                        : formatResourceAmount(b.amount, b.divisibility)}
+                    </p>
+                    {b.kind === "NonFungible" && b.nonFungibleTokenIds && b.nonFungibleTokenIds.length > 0 && (
+                      <p className="mt-0.5 truncate text-[11px] text-zinc-500" title={b.nonFungibleTokenIds.join(", ")}>
+                        {b.nonFungibleTokenIds.slice(0, 3).join(", ")}
+                        {b.nonFungibleTokenIds.length > 3 ? t("l2.moreSuffix", { n: b.nonFungibleTokenIds.length - 3 }) : ""}
+                      </p>
+                    )}
+                    {b.confidentialAmount > 0n && (
+                      <p className="tabular mt-0.5 flex items-center justify-end gap-1 font-mono text-[11px] text-[var(--st-violet)]">
+                        <Lock size={9} />
+                        {t("l2.privateAmount", { amount: formatResourceAmount(b.confidentialAmount, b.divisibility) })}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -6,31 +6,16 @@ import { OOTLE_NETWORK, TARI_RESOURCE_ADDRESS, formatResourceAmount, toOotleNetw
 import { truncMiddle } from "../lib/format";
 import { useToast } from "./toast";
 import { Button, Field, TextInput } from "./ui";
+import { t as translate, useI18n, type TranslationKey } from "../i18n";
+import { withL2Log } from "../lib/l2history";
 
 type Mode = "send" | "sendPrivately" | "shield" | "unshield";
 
-const MODES: { id: Mode; label: string; blurb: string }[] = [
-  {
-    id: "send",
-    label: "Send",
-    blurb: "A public transfer: the amount is visible on chain to anyone looking.",
-  },
-  {
-    id: "sendPrivately",
-    label: "Send privately",
-    blurb:
-      "Pays from your shielded funds into a stealth output only the recipient can open — the amount stays hidden.",
-  },
-  {
-    id: "shield",
-    label: "Shield",
-    blurb: "Move revealed funds into a private output that only your view key can open.",
-  },
-  {
-    id: "unshield",
-    label: "Unshield",
-    blurb: "Bring private funds back out into your revealed balance.",
-  },
+const MODES: { id: Mode; label: TranslationKey; blurb: TranslationKey }[] = [
+  { id: "send", label: "l2send.modeSend", blurb: "l2send.modeSendBlurb" },
+  { id: "sendPrivately", label: "l2send.modeSendPrivately", blurb: "l2send.modeSendPrivatelyBlurb" },
+  { id: "shield", label: "l2send.modeShield", blurb: "l2send.modeShieldBlurb" },
+  { id: "unshield", label: "l2send.modeUnshield", blurb: "l2send.modeUnshieldBlurb" },
 ];
 
 /**
@@ -40,12 +25,13 @@ const MODES: { id: Mode; label: string; blurb: string }[] = [
  * reason about. A transfer names a resource, an amount and (for a send) a recipient; the account
  * pays a flat max fee out of its own vault.
  */
-export function L2SendPanel() {
+export function L2SendPanel({ initialMode = "send" }: { initialMode?: Mode } = {}) {
   const store = useStore();
   const toast = useToast();
+  const { t } = useI18n();
   const { identity, balances } = store.l2;
 
-  const [mode, setMode] = useState<Mode>("send");
+  const [mode, setMode] = useState<Mode>(initialMode);
   const usable = useMemo(
     // NonFungible excluded: this panel sends a decimal *amount* of a resource, but an NFT's
     // `amount` is a token count (see TokenBalance.nonFungibleTokenIds's doc comment) -- sending a
@@ -92,13 +78,13 @@ export function L2SendPanel() {
     try {
       const parsed = parseOotleAddress(value);
       if (parsed.network !== toOotleNetwork(OOTLE_NETWORK)) {
-        return { valid: false, message: "That address belongs to a different Ootle network." };
+        return { valid: false, message: t("l2send.wrongNetwork") };
       }
-      return { valid: true, message: "Valid Ootle address" };
+      return { valid: true, message: t("l2send.validAddress") };
     } catch {
-      return { valid: false, message: "Not a valid Ootle address — check it for a typo." };
+      return { valid: false, message: t("l2send.invalidAddress") };
     }
-  }, [recipient]);
+  }, [recipient, t]);
   const recipientValid = recipientCheck.valid;
   const needsRecipient = mode === "send" || mode === "sendPrivately";
   const overBalance = amountRaw !== null && amountRaw > available;
@@ -115,34 +101,34 @@ export function L2SendPanel() {
     setBusy(true);
     try {
       const trimmedMemo = memo.trim() || undefined;
-      if (mode === "send") {
-        await identity.account.send(recipient.trim(), resource.resourceAddress, amountRaw);
-      } else if (mode === "sendPrivately") {
-        // Note the argument order: sendPrivately takes (resource, recipient), the reverse of
-        // send's (recipient, resource). Both are strings, so nothing but care catches a swap.
-        await identity.account.sendPrivately(
-          resource.resourceAddress,
-          recipient.trim(),
-          amountRaw,
-          undefined,
-          trimmedMemo,
-        );
-      } else if (mode === "shield") {
-        await identity.account.shield(resource.resourceAddress, amountRaw, undefined, trimmedMemo);
-      } else {
-        await identity.account.unshield(resource.resourceAddress, amountRaw, undefined, trimmedMemo);
-      }
+      const entry = {
+        kind: mode,
+        amount: amountRaw.toString(),
+        divisibility: resource.divisibility,
+        symbol: resource.symbol ?? undefined,
+        counterparty: needsRecipient ? recipient.trim() : undefined,
+      };
+      await withL2Log<unknown>(identity.address, entry, () => {
+        if (mode === "send") return identity.account.send(recipient.trim(), resource.resourceAddress, amountRaw);
+        if (mode === "sendPrivately") {
+          // Note the argument order: sendPrivately takes (resource, recipient), the reverse of
+          // send's (recipient, resource). Both are strings, so nothing but care catches a swap.
+          return identity.account.sendPrivately(resource.resourceAddress, recipient.trim(), amountRaw, undefined, trimmedMemo);
+        }
+        if (mode === "shield") return identity.account.shield(resource.resourceAddress, amountRaw, undefined, trimmedMemo);
+        return identity.account.unshield(resource.resourceAddress, amountRaw, undefined, trimmedMemo);
+      });
       toast({
         tone: "success",
         title:
           mode === "send"
-            ? "Sent on Ootle"
+            ? t("l2send.sentOnOotle")
             : mode === "sendPrivately"
-              ? "Sent privately"
+              ? t("l2send.sentPrivately")
               : mode === "shield"
-                ? "Funds shielded"
-                : "Funds unshielded",
-        message: "Refreshing your balances…",
+                ? t("l2send.shielded")
+                : t("l2send.unshielded"),
+        message: t("l2send.refreshing"),
       });
       setAmount("");
       setRecipient("");
@@ -153,10 +139,10 @@ export function L2SendPanel() {
         tone: "error",
         title:
           mode === "send" || mode === "sendPrivately"
-            ? "Send failed"
+            ? t("l2send.sendFailed")
             : mode === "shield"
-              ? "Shield failed"
-              : "Unshield failed",
+              ? t("l2send.shieldFailed")
+              : t("l2send.unshieldFailed"),
         message: explainFailure(e),
       });
     }
@@ -164,7 +150,7 @@ export function L2SendPanel() {
   }
 
   if (!identity) {
-    return <p className="py-8 text-center text-sm text-zinc-500">Switch to L2 first.</p>;
+    return <p className="py-8 text-center text-sm text-zinc-500">{t("l2send.switchToL2")}</p>;
   }
 
   const active = MODES.find((m) => m.id === mode)!;
@@ -181,7 +167,7 @@ export function L2SendPanel() {
             <Eye size={15} />
           )}
         </span>
-        Ootle transfer
+        {t("l2send.title")}
       </h2>
 
       <div className="mb-4 grid grid-cols-2 gap-1 rounded-2xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)] p-1 sm:grid-cols-4">
@@ -194,7 +180,7 @@ export function L2SendPanel() {
             }}
             title={
               m.id === "send" && revealedEmpty
-                ? `${resource?.symbol ?? "This token"} has no revealed balance to send publicly — unshield some first.`
+                ? t("l2send.noRevealedTitle", { symbol: resource?.symbol ?? t("l2send.thisToken") })
                 : undefined
             }
             className={
@@ -203,40 +189,33 @@ export function L2SendPanel() {
                 : "rounded-xl px-2 py-2 text-xs font-bold text-zinc-500 hover:text-[var(--tari-text)] disabled:cursor-not-allowed disabled:opacity-40"
             }
           >
-            {m.label}
+            {t(m.label)}
           </button>
         ))}
       </div>
-      <p className="mb-4 text-xs leading-relaxed text-zinc-500">{active.blurb}</p>
+      <p className="mb-4 text-xs leading-relaxed text-zinc-500">{t(active.blurb)}</p>
 
       {mode === "send" && revealedEmpty && (
         <p className="mb-4 rounded-2xl border border-[var(--st-amber)]/30 bg-[var(--st-amber)]/10 p-3 text-[11px] leading-relaxed text-[var(--tari-text)]">
-          A public send spends your <b>revealed</b> balance, and none is showing —{" "}
-          {resource?.symbol ?? "this token"} is currently held entirely in stealth outputs.{" "}
-          <b>Unshield</b> some first, or use <b>Send privately</b> to spend the shielded side
-          directly.
+          {t("l2send.noRevealedNote", { symbol: resource?.symbol ?? t("l2send.thisTokenLower") })}
         </p>
       )}
 
       {mode === "sendPrivately" && resource && resource.confidentialAmount === 0n && (
         <p className="mb-4 rounded-2xl border border-[var(--st-amber)]/30 bg-[var(--st-amber)]/10 p-3 text-[11px] leading-relaxed text-[var(--tari-text)]">
-          A private send spends your <b>shielded</b> balance, and none is showing. Shield some
-          first — or, if you shielded from another wallet, use <b>Find private funds</b> on the
-          Ootle card to rediscover it.
+          {t("l2send.noShieldedNote")}
         </p>
       )}
 
       {usable.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-8 text-center">
           <Wallet size={28} className="text-zinc-500" />
-          <p className="text-sm font-bold text-[var(--tari-text)]">No funds available</p>
-          <p className="max-w-[42ch] text-xs text-zinc-500">
-            This account holds no Ootle funds. Claim some test TARI from the Ootle card first.
-          </p>
+          <p className="text-sm font-bold text-[var(--tari-text)]">{t("l2send.noFunds")}</p>
+          <p className="max-w-[42ch] text-xs text-zinc-500">{t("l2send.noFundsSub")}</p>
         </div>
       ) : (
         <div className="space-y-4">
-          <Field label="Token">
+          <Field label={t("l2send.token")}>
             <div className="flex flex-wrap gap-2">
               {usable.map((b) => (
                 <button
@@ -259,8 +238,8 @@ export function L2SendPanel() {
 
           {needsRecipient && (
             <Field
-              label="Recipient address"
-              hint={recipientCheck.message ?? "The otl_… address of the account you are paying"}
+              label={t("l2send.recipient")}
+              hint={recipientCheck.message ?? t("l2send.recipientHint")}
             >
               <div className="relative">
                 <TextInput
@@ -280,13 +259,13 @@ export function L2SendPanel() {
           )}
 
           <Field
-            label="Amount"
+            label={t("l2send.amount")}
             hint={
               resource
-                ? `${spendsPrivate ? "Private" : "Revealed"} available: ${formatResourceAmount(
-                    available,
-                    resource.divisibility,
-                  )} ${resource.symbol ?? ""}`
+                ? t(spendsPrivate ? "l2send.privateAvailable" : "l2send.revealedAvailable", {
+                    amount: formatResourceAmount(available, resource.divisibility),
+                    symbol: resource.symbol ?? "",
+                  })
                 : ""
             }
           >
@@ -305,41 +284,36 @@ export function L2SendPanel() {
                 }
                 className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-full border border-[var(--tari-border)] px-2.5 py-0.5 text-[10px] font-bold text-[var(--tari-text)] uppercase hover:bg-[color-mix(in_srgb,var(--tari-text)_10%,transparent)]"
               >
-                Max
+                {t("l2send.max")}
               </button>
             </div>
           </Field>
 
           {mode !== "send" && (
             <Field
-              label="Memo — optional"
-              hint={
-                mode === "sendPrivately"
-                  ? "Travels with the private output to the recipient."
-                  : "Stored with the private output, visible only to you."
-              }
+              label={t("l2send.memo")}
+              hint={mode === "sendPrivately" ? t("l2send.memoPrivateHint") : t("l2send.memoSelfHint")}
             >
               <TextInput
                 value={memo}
                 onChange={(e) => setMemo(e.target.value)}
-                placeholder="What is this for?"
+                placeholder={t("l2send.memoPlaceholder")}
               />
             </Field>
           )}
 
           {overBalance && (
             <p className="text-center text-xs text-[var(--st-red)]">
-              More than this account holds — the network fee comes out of the same vault.
+              {t("l2send.overBalance")}
             </p>
           )}
 
           <Button size="lg" className="w-full" disabled={!canSubmit} loading={busy} onClick={() => void submit()}>
-            {busy ? "Working…" : active.label}
+            {busy ? t("l2send.working") : t(active.label)}
           </Button>
 
           <p className="text-center text-[10px] text-zinc-500">
-            Shielded funds stay in this account — only their amount is hidden. Sending them to
-            someone else is a separate step.
+            {t("l2send.footer")}
           </p>
         </div>
       )}
@@ -361,7 +335,7 @@ export function L2SendPanel() {
 function explainFailure(e: unknown): string {
   const message = e instanceof Error ? e.message : String(e);
   if (/untagged enum TransactionInput/.test(message)) {
-    return `The wallet built a transaction the signer could not parse — this is a bug, not a limit on the token. Details: ${message.slice(0, 300)}`;
+    return translate("l2send.signerBug", { details: message.slice(0, 300) });
   }
   return message.slice(0, 180);
 }
