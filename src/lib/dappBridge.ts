@@ -157,6 +157,13 @@ export function capabilitiesFor(origin: string | null) {
     /** `tari_signWalletOwnershipChallenge` — proves control of the wallet address itself, not tied
      * to any particular output. */
     walletOwnershipProof: true,
+    /**
+     * Proposed Minotari L1 GGBP-1 aggregate-threshold proof. This remains explicitly unavailable
+     * until the wallet has a reviewed, wallet-internal output-authority and aggregate-proof
+     * implementation. Generic signatures, output values, keys, and transaction builders are not
+     * substitutes for this capability.
+     */
+    ggbp1BalanceProof: false,
     /** The `depositConfidential` transaction-request kind — moves revealed balance into a
      * Confidential-type vault, a different privacy mechanism from the Stealth surface above. */
     confidentialDeposit: true,

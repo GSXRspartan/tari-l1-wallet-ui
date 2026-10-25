@@ -68,8 +68,21 @@ interface Capabilities {
   transactionRequests: boolean;
   walletAddress: boolean;
   dryRunIsLocal: boolean;
+  // false until a reviewed, wallet-internal Minotari L1 GGBP-1 implementation exists.
+  // Do not infer this from generic signing, L1 output values, or Ootle ownership proofs.
+  ggbp1BalanceProof: false | {
+    protocolVersion: 2;
+    network: "esmeralda";
+    maxOutputs: 16;
+    maxProofBytes: 8192;
+  };
 }
 ```
+
+`ggbp1BalanceProof` is currently `false`. A dApp must treat that as unavailable and fail closed;
+it must not request a generic signature, output value, seed, key, mask, transaction, or Ootle
+ownership proof as a substitute. The proposed reviewed capability and its test-vector constraints
+are documented in `docs/GGBP1_GHOST_GATE_HANDOFF.md`.
 
 ---
 
