@@ -291,7 +291,10 @@ export function tryImportOutput(
       ),
     };
   } catch (e) {
-    return { handle: null, reason: e instanceof Error ? e.message : String(e) };
+    const base = e instanceof Error ? e.message : String(e);
+    // Diagnostic: a freed wallet (ptr 0) and a poisoned one look identical from the message alone.
+    const ptr = (wallet as unknown as { __wbg_ptr?: number }).__wbg_ptr;
+    return { handle: null, reason: `${base} [wallet ptr=${ptr}, ${String(o.commitment_hex).slice(0, 12)}]` };
   }
 }
 
@@ -562,7 +565,7 @@ export async function scanRange(
                 }
                 const { handle, reason } = tryImportOutput(wallet, o);
                 if (!handle) {
-                  noteFailure(height, reason ?? "re-import failed");
+                  noteFailure(height, `re-import: ${reason ?? "failed"}`);
                   state.clean = false;
                   continue;
                 }

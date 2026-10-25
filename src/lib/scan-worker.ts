@@ -130,7 +130,7 @@ function handle(msg: InMessage) {
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         // Not ours is the overwhelmingly common answer, and it is not a failure.
-        if (!/does not belong to this wallet/.test(reason)) failures.push({ height, reason });
+        if (!/does not belong to this wallet/.test(reason)) failures.push({ height, reason: `worker-detect: ${reason} [${o.commitment_hex.slice(0, 12)}]` });
       }
     }
     post({ type: "detected", id: msg.id, hits, failures });

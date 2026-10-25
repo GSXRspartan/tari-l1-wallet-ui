@@ -999,6 +999,110 @@ export class WasmTxBuilder {
 if (Symbol.dispose) WasmTxBuilder.prototype[Symbol.dispose] = WasmTxBuilder.prototype.free;
 
 /**
+ * A verified output value and memo, without spending authority. Free the handle after use.
+ */
+export class WasmViewedOutput {
+    static __wrap(ptr) {
+        const obj = Object.create(WasmViewedOutput.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmViewedOutputFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmViewedOutputFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmviewedoutput_free(ptr, 0);
+    }
+    /**
+     * Commitment encoded as lowercase hex.
+     * @returns {string}
+     */
+    get commitmentHex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmviewedoutput_commitmentHex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Complete serialized memo, including its type and payment ID.
+     * @returns {Uint8Array}
+     */
+    get memoBytes() {
+        const ret = wasm.wasmviewedoutput_memoBytes(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Raw payment ID bytes from the memo.
+     * @returns {Uint8Array}
+     */
+    get paymentId() {
+        const ret = wasm.wasmviewedoutput_paymentId(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Payment ID as UTF-8 text, or undefined if decoding fails.
+     * @returns {string | undefined}
+     */
+    get paymentIdText() {
+        const ret = wasm.wasmviewedoutput_paymentIdText(this.__wbg_ptr);
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+    /**
+     * Sender-reported fee in microMinotari, when present in the memo.
+     * @returns {bigint | undefined}
+     */
+    get senderFeeMicro() {
+        const ret = wasm.wasmviewedoutput_senderFeeMicro(this.__wbg_ptr);
+        return ret[0] === 0 ? undefined : BigInt.asUintN(64, ret[1]);
+    }
+    /**
+     * Transaction type label reported by the memo.
+     * @returns {string}
+     */
+    get txType() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmviewedoutput_txType(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Recovered value in microMinotari, verified against the commitment.
+     * @returns {bigint}
+     */
+    get valueMicro() {
+        const ret = wasm.wasmviewedoutput_valueMicro(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+}
+if (Symbol.dispose) WasmViewedOutput.prototype[Symbol.dispose] = WasmViewedOutput.prototype.free;
+
+/**
  * A self-contained Tari wallet capable of building fully-signed L1 transactions entirely in WASM.
  *
  * Keys are derived from a CipherSeed; the seed can be exported/imported as an enciphered hex blob
@@ -1021,6 +1125,13 @@ export class WasmWallet {
     free() {
         const ptr = this.__destroy_into_raw();
         wasm.__wbg_wasmwallet_free(ptr, 0);
+    }
+    /**
+     * @returns {boolean}
+     */
+    get canSpend() {
+        const ret = wasm.wasmwallet_canSpend(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * Creates a fresh spendable UTXO handle owned by this wallet (useful for testing flows and
@@ -1061,6 +1172,21 @@ export class WasmWallet {
         }
     }
     /**
+     * @returns {string}
+     */
+    exportPrivateViewKeyHex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmwallet_exportPrivateViewKeyHex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Restores a wallet from an enciphered seed blob (see `getBackupHex`).
      * @param {string} backup_hex
      * @param {string} network
@@ -1072,6 +1198,41 @@ export class WasmWallet {
         const ptr1 = passStringToWasm0(network, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.wasmwallet_fromBackupHex(ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return WasmWallet.__wrap(ret[0]);
+    }
+    /**
+     * @param {string} private_view_key_hex
+     * @param {string} address
+     * @returns {WasmWallet}
+     */
+    static fromViewKeyAndAddress(private_view_key_hex, address) {
+        const ptr0 = passStringToWasm0(private_view_key_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(address, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwallet_fromViewKeyAndAddress(ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return WasmWallet.__wrap(ret[0]);
+    }
+    /**
+     * @param {string} private_view_key_hex
+     * @param {string} public_spend_key_hex
+     * @param {string} network
+     * @returns {WasmWallet}
+     */
+    static fromViewKeyHex(private_view_key_hex, public_spend_key_hex, network) {
+        const ptr0 = passStringToWasm0(private_view_key_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(public_spend_key_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(network, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwallet_fromViewKeyHex(ptr0, len0, ptr1, len1, ptr2, len2);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1166,6 +1327,8 @@ export class WasmWallet {
      * sender offset key alone, so those are all this takes, and it returns a plain bool.
      *
      * The caller re-fetches and imports the winners properly; this is a filter, not an import.
+     * Returns false if decryption fails or the recovered value/mask does not match the commitment.
+     * Malformed input returns an error.
      * @param {string} commitment_hex
      * @param {string} encrypted_data_hex
      * @param {string} sender_offset_pub_hex
@@ -1185,6 +1348,13 @@ export class WasmWallet {
         return ret[0] !== 0;
     }
     /**
+     * @returns {boolean}
+     */
+    get isViewOnly() {
+        const ret = wasm.wasmwallet_isViewOnly(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * @param {string} network
      */
     constructor(network) {
@@ -1197,6 +1367,57 @@ export class WasmWallet {
         this.__wbg_ptr = ret[0];
         WasmWalletFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * @returns {string}
+     */
+    get publicSpendKeyHex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmwallet_publicSpendKeyHex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {string}
+     */
+    get publicViewKeyHex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmwallet_publicViewKeyHex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Recovers a verified value and memo using the view key; errors if the output is not recoverable.
+     * Free the returned handle after use.
+     * @param {string} commitment_hex
+     * @param {string} encrypted_data_hex
+     * @param {string} sender_offset_pub_hex
+     * @returns {WasmViewedOutput}
+     */
+    viewOutput(commitment_hex, encrypted_data_hex, sender_offset_pub_hex) {
+        const ptr0 = passStringToWasm0(commitment_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(encrypted_data_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(sender_offset_pub_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwallet_viewOutput(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return WasmViewedOutput.__wrap(ret[0]);
     }
     /**
      * Debug: build marker to verify the served wasm is current.
@@ -1607,6 +1828,9 @@ const WasmTariAddressFinalization = (typeof FinalizationRegistry === 'undefined'
 const WasmTxBuilderFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmtxbuilder_free(ptr, 1));
+const WasmViewedOutputFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmviewedoutput_free(ptr, 1));
 const WasmWalletFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmwallet_free(ptr, 1));

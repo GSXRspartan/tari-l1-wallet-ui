@@ -11,10 +11,24 @@ transactions entirely in the browser — no wallet daemon, no backend.
   or protobuf `SubmitTransactionRequest` bytes for gRPC/gRPC-Web
 - **Primitives**: Ristretto Schnorr sign/verify, Pedersen commitments, BLAKE2b, fee estimation
 
-## Installation
+Published to npm as **[`@chironbuilder/tari-l1-wasm`](https://www.npmjs.com/package/@chironbuilder/tari-l1-wasm)**.
+
+## About this repository
+
+This is the **source** of the `@chironbuilder/tari-l1-wasm` package, opened so others can read it,
+file issues and contribute.
+
+> **Heads-up — this crate does not build on its own.** It is a crate of the
+> [Tari monorepo](https://github.com/tari-project/tari) (`base_layer/tari_l1_wasm`) and depends on
+> other workspace crates (`tari_crypto`, `tari_common_types`, `tari_transaction_components`,
+> `tari_script`, …) via `workspace = true`. It also carries two small edits to
+> `tari_transaction_components` (see [`integration.patch`](./integration.patch)). To compile it you
+> need the surrounding workspace — see **Building** below.
+
+## Installation (use the package)
 
 ```sh
-npm install @your-scope/tari-l1-wasm
+npm install @chironbuilder/tari-l1-wasm
 ```
 
 ## Usage
@@ -23,7 +37,7 @@ npm install @your-scope/tari-l1-wasm
 import {
   WasmWallet,
   WasmTxBuilder,
-} from "@your-scope/tari-l1-wasm";
+} from "@chironbuilder/tari-l1-wasm";
 // The module self-initializes its WASM instance on import.
 // Bundlers (Vite/webpack/rspack) handle the .wasm import automatically.
 // Plain Node >= 22 needs: node --experimental-wasm-modules your-script.mjs
@@ -59,16 +73,50 @@ await fetch(nodeUrl + "/json_rpc", {
 
 Recipients must be dual ("one-sided") addresses containing a view key.
 
+## Watch-only scanning
+
+Export a wallet's private view key with `exportPrivateViewKeyHex()`, then create
+a watch-only wallet with `WasmWallet.fromViewKeyAndAddress(key, dualAddress)`.
+Alternatively, use `fromViewKeyHex(key, publicSpendKey, network)`.
+
+Use `isOutputMine(commitment, encryptedData, senderOffsetPub)` to detect outputs,
+or `viewOutput(...)` to recover their value and memo. Free the returned handle.
+Watch-only wallets cannot spend.
+
 ## Building from source
 
+Because this is a monorepo crate, build it inside a Tari checkout:
+
 ```sh
+# 1. Clone the Tari monorepo this was built against
+git clone https://github.com/tari-project/tari.git
+cd tari
+git checkout v5.6.0-pre.1
+
+# 2. Drop this crate's source into place (replace <this-repo> with your clone of this repo)
+mkdir -p base_layer/tari_l1_wasm
+cp -r <this-repo>/{Cargo.toml,LICENSE,README.md,src,tests,scripts,smoke_test.mjs} base_layer/tari_l1_wasm/
+
+# 3. Apply the workspace registration + the two tari_transaction_components edits
+git apply <this-repo>/integration.patch
+
+# 4. Build the wasm (needs Rust + the wasm32-unknown-unknown target and wasm-pack)
 wasm-pack build base_layer/tari_l1_wasm --target bundler --release --out-dir pkg
-node base_layer/tari_l1_wasm/scripts/prepare-package.mjs --scope @your-scope
+node base_layer/tari_l1_wasm/scripts/prepare-package.mjs --scope @chironbuilder
 ```
 
-Requires Rust with the `wasm32-unknown-unknown` target. The workspace `.cargo/config.toml`
-sets the getrandom wasm_js backend automatically.
+The workspace `.cargo/config.toml` (included in `integration.patch`) sets the getrandom `wasm_js`
+backend automatically. Native tests (`cargo test -p tari_l1_wasm`) also run from inside the
+workspace.
+
+## Contributing
+
+Issues and PRs welcome. Please keep changes to the `tari_l1_wasm` crate here; anything that has to
+touch other Tari crates should also go upstream to
+[tari-project/tari](https://github.com/tari-project/tari). See `integration.patch` for the exact
+cross-crate changes this build relies on.
 
 ## License
 
-BSD-3-Clause — see [LICENSE](./LICENSE).
+BSD-3-Clause — see [LICENSE](./LICENSE). Derived from
+[tari-project/tari](https://github.com/tari-project/tari); © The Tari Development Community.

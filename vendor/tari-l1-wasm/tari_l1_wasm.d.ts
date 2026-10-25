@@ -252,6 +252,43 @@ export class WasmTxBuilder {
 }
 
 /**
+ * A verified output value and memo, without spending authority. Free the handle after use.
+ */
+export class WasmViewedOutput {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Commitment encoded as lowercase hex.
+     */
+    readonly commitmentHex: string;
+    /**
+     * Complete serialized memo, including its type and payment ID.
+     */
+    readonly memoBytes: Uint8Array;
+    /**
+     * Raw payment ID bytes from the memo.
+     */
+    readonly paymentId: Uint8Array;
+    /**
+     * Payment ID as UTF-8 text, or undefined if decoding fails.
+     */
+    readonly paymentIdText: string | undefined;
+    /**
+     * Sender-reported fee in microMinotari, when present in the memo.
+     */
+    readonly senderFeeMicro: bigint | undefined;
+    /**
+     * Transaction type label reported by the memo.
+     */
+    readonly txType: string;
+    /**
+     * Recovered value in microMinotari, verified against the commitment.
+     */
+    readonly valueMicro: bigint;
+}
+
+/**
  * A self-contained Tari wallet capable of building fully-signed L1 transactions entirely in WASM.
  *
  * Keys are derived from a CipherSeed; the seed can be exported/imported as an enciphered hex blob
@@ -270,10 +307,13 @@ export class WasmWallet {
      * Debug: hashes range-proof hex with Tari's domain hasher (matches chain rangeproof_hash).
      */
     static debugHashRangeProof(range_proof_hex: string): string;
+    exportPrivateViewKeyHex(): string;
     /**
      * Restores a wallet from an enciphered seed blob (see `getBackupHex`).
      */
     static fromBackupHex(backup_hex: string, network: string): WasmWallet;
+    static fromViewKeyAndAddress(private_view_key_hex: string, address: string): WasmWallet;
+    static fromViewKeyHex(private_view_key_hex: string, public_spend_key_hex: string, network: string): WasmWallet;
     /**
      * The wallet's own dual one-sided payment address.
      */
@@ -300,13 +340,24 @@ export class WasmWallet {
      * sender offset key alone, so those are all this takes, and it returns a plain bool.
      *
      * The caller re-fetches and imports the winners properly; this is a filter, not an import.
+     * Returns false if decryption fails or the recovered value/mask does not match the commitment.
+     * Malformed input returns an error.
      */
     isOutputMine(commitment_hex: string, encrypted_data_hex: string, sender_offset_pub_hex: string): boolean;
     constructor(network: string);
     /**
+     * Recovers a verified value and memo using the view key; errors if the output is not recoverable.
+     * Free the returned handle after use.
+     */
+    viewOutput(commitment_hex: string, encrypted_data_hex: string, sender_offset_pub_hex: string): WasmViewedOutput;
+    /**
      * Debug: build marker to verify the served wasm is current.
      */
     static wasmBuildMarker(): string;
+    readonly canSpend: boolean;
+    readonly isViewOnly: boolean;
+    readonly publicSpendKeyHex: string;
+    readonly publicViewKeyHex: string;
 }
 
 /**
