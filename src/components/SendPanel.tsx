@@ -69,7 +69,10 @@ export function SendPanel() {
       ? selectInputs(inputLikes, amountMicro, fpg)
       : null;
   const maxSpend = fpg ? estimateMaxSpend(inputLikes, fpg) : 0n;
-  const addressValid = !!parsed && !parsed.isSingle;
+  // The builder signs a payment to any network's address; one from another network (a testnet
+  // address pasted into a mainnet wallet, say) pays keys the recipient's wallet here never scans.
+  const wrongNetwork = !!parsed && !!store.network && parsed.network !== store.network;
+  const addressValid = !!parsed && !parsed.isSingle && !wrongNetwork;
   const canReview = addressValid && !!amountMicro && amountMicro > 0n && !!selection;
 
   async function build() {
@@ -256,7 +259,9 @@ export function SendPanel() {
               ? parsed
                 ? addressValid
                   ? t("send.validOneSided")
-                  : t("send.singleAddress")
+                  : wrongNetwork
+                    ? t("send.wrongNetwork", { network: parsed.network, current: store.network ?? "" })
+                    : t("send.singleAddress")
                 : t("send.invalidAddress")
               : t("send.addressFormats")
           }
