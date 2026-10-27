@@ -29,7 +29,7 @@ const POOL_MIN_BLOCKS = 50;
 import { fetchChainTip } from "./lib/explorer";
 import { burnClaimedOnOotle, deriveL2Identity, fetchL2Balances, fetchL2Deposits, type L2Identity } from "./lib/l2";
 import { attributePayment, deriveSubAddress, type SubAddress } from "./lib/subaddress";
-import { wipeOotleState, type TokenBalance } from "./ootle";
+import { OOTLE_NETWORK, TARI_RESOURCE_ADDRESS, toOotleNetwork, wipeOotleState, type TokenBalance } from "./ootle";
 import { decryptWithPin, encryptWithPin, type EncryptedBlob } from "./lib/pinLock";
 import {
   AUTO_NODE_ID,
@@ -45,6 +45,7 @@ import {
 import { CLAIM_MIN_CONFIRMATIONS, burnClaimableNow, burnConfirmations, claimProofFor, claimRetryDelayMs, isRetryableClaimError, type BurnRecord } from "./lib/burn";
 import { hasPendingL2, logL2, receiptKnown, receiptsSeeded, recordReceipts, withL2Log } from "./lib/l2history";
 import type { ScannedStealthOutput } from "@chironbuilder/ootle-sdk";
+import { defaultIndexerUrl } from "@tari-project/ootle";
 
 const STORAGE_KEY = "tari-l1-wallet/v1";
 
@@ -1314,6 +1315,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setL2((prev) => ({ ...prev, loading: true }));
     try {
       const { claimed, found } = await account.scanForPrivatePayments();
+      // Also scan the live UTXO set for the TARI resource: finds outputs that exist on-chain
+      // regardless of age or how they were created, without requiring full history retention.
+      const indexerBaseUrl = defaultIndexerUrl(toOotleNetwork(OOTLE_NETWORK));
+      await account.scanForOwnedUtxos(TARI_RESOURCE_ADDRESS, indexerBaseUrl).catch(() => undefined);
       const { balances, error } = await fetchL2Balances(account);
       setL2((prev) => ({ ...prev, balances, error, loading: false }));
       logPrivateReceipts(l2.identity!, found, balances);
@@ -1366,6 +1371,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         );
       }
       const { found } = await identity.account.scanForPrivatePayments(3);
+      // Delta-scan the live UTXO set (cheap on repeat calls, uses saved watermarks).
+      const indexerBaseUrl = defaultIndexerUrl(toOotleNetwork(OOTLE_NETWORK));
+      await identity.account.scanForOwnedUtxos(TARI_RESOURCE_ADDRESS, indexerBaseUrl).catch(() => undefined);
       const pruned = await identity.account.pruneSpentShieldedOutputs().catch(() => 0);
       if (found.length > 0 || added > 0 || pruned > 0) {
         const fresh = await fetchL2Balances(identity.account);

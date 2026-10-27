@@ -19,8 +19,16 @@ function describeArg(arg: InstructionArg): string {
   if (!arg || typeof arg !== "object" || Array.isArray(arg)) throw new Error("Invalid instruction argument");
   const keys = Object.keys(arg);
   if (keys.length !== 1) throw new Error("Invalid instruction argument");
-  if (keys[0] === "Workspace" && typeof (arg as { Workspace?: unknown }).Workspace === "number") {
-    return t("instr.workspaceSlot", { n: (arg as unknown as { Workspace: number }).Workspace });
+  if (keys[0] === "Workspace") {
+    const ws = (arg as { Workspace?: unknown }).Workspace;
+    // Resolved form (current wire shape): { id, offset }. A bare number is kept too, in case an
+    // older engine/dApp build still sends one -- this summary only ever reads it, never trusts it
+    // for anything consequential, so accepting both costs nothing and breaks nothing either way.
+    if (typeof ws === "number") return t("instr.workspaceSlot", { n: ws });
+    if (ws && typeof ws === "object" && typeof (ws as { id?: unknown }).id === "number") {
+      const { id, offset } = ws as { id: number; offset: number | null };
+      return t("instr.workspaceSlot", { n: offset === null ? id : `${id}.${offset}` });
+    }
   }
   if (keys[0] === "Blob" && typeof (arg as { Blob?: unknown }).Blob === "number") {
     return t("instr.blob", { n: (arg as { Blob: number }).Blob });
