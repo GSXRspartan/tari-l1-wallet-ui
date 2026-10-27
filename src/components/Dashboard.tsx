@@ -214,13 +214,15 @@ export function Dashboard() {
             >
               <Code2 size={20} />
             </button>
-            <button
-              className="un-rail-btn rail-secondary"
-              title={t("dash.ootleApps")}
-              onClick={() => openPanel("dapps")}
-            >
-              <Grid3x3 size={20} />
-            </button>
+            {store.layer === "L2" && (
+              <button
+                className="un-rail-btn rail-secondary"
+                title={t("dash.ootleApps")}
+                onClick={() => openPanel("dapps")}
+              >
+                <Grid3x3 size={20} />
+              </button>
+            )}
           </div>
 
           <div className="flex flex-row items-center gap-1 md:flex-col md:gap-2.5">

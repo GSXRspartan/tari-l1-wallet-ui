@@ -523,7 +523,24 @@ export interface PendingApproval {
  * Built from the request itself rather than anything the dApp says about it: a dApp supplying its
  * own description of what it is asking for is the oldest trick there is.
  */
-export function describeRequest(method: BridgeMethod, params: Record<string, unknown>): string[] {
+/**
+ * How the approval lines render a raw amount, a resource and the fee budget. The default shows
+ * raw base units; the frame passes one built from the account's own balances (divisibility and
+ * symbol), so "1000000" of TARI reads as "1 TARI" rather than overstating it a millionfold.
+ */
+export interface ApprovalFormatter {
+  amount(raw: string, resourceAddress: string): string;
+  resource(resourceAddress: string): string;
+  fee(raw: string): string;
+}
+
+const RAW_FORMATTER: ApprovalFormatter = {
+  amount: (raw) => `${raw} base units`,
+  resource: (address) => shortId(address),
+  fee: (raw) => `${raw} base units of TARI`,
+};
+
+export function describeRequest(method: BridgeMethod, params: Record<string, unknown>, fmt: ApprovalFormatter = RAW_FORMATTER): string[] {
   switch (method) {
     case "tari_requestAccounts":
       return [
@@ -564,12 +581,12 @@ export function describeRequest(method: BridgeMethod, params: Record<string, unk
         t("approve.noKeys"),
       ];
     case "tari_createTransactionRequest":
-      return describeOperation(params as unknown as TransactionRequestOperation);
+      return describeOperation(params as unknown as TransactionRequestOperation, fmt);
     case "tari_signAndSubmitTransaction": {
       const instructions = summarizeInstructionArray(params.instructions);
       return [
         t(instructions.length === 1 ? "approve.signSubmitOne" : "approve.signSubmitMany", { n: instructions.length }),
-        t("approve.maxFee", { fee: String(params.maxFee ?? "5000") }),
+        t("approve.maxFee", { fee: fmt.fee(String(params.maxFee ?? "5000")) }),
         ...instructions,
       ];
     }
@@ -590,11 +607,9 @@ function shortId(value: string): string {
  * operation carries it. An absent or zero promise adds no line at all — a warning that appears on
  * every transaction is one nobody reads on the transaction that needed it.
  */
-function promiseLines(minimumValuePromise: string | undefined, subject: string): string[] {
+function promiseLines(minimumValuePromise: string | undefined, subject: string, amount: string): string[] {
   if (minimumValuePromise === undefined || BigInt(minimumValuePromise) === 0n) return [];
-  return [
-    t("approve.promise", { subject, amount: minimumValuePromise }),
-  ];
+  return [t("approve.promise", { subject, amount })];
 }
 
 /**
@@ -605,77 +620,81 @@ function promiseLines(minimumValuePromise: string | undefined, subject: string):
  * render as "a stealth transfer" otherwise, and "unshield" in particular makes an amount visible
  * on-chain forever, which a user has to be told before approving and not after.
  */
-export function describeOperation(operation: TransactionRequestOperation): string[] {
+export function describeOperation(operation: TransactionRequestOperation, fmt: ApprovalFormatter = RAW_FORMATTER): string[] {
+  const of = (raw: string, resourceAddress: string) => ({ amount: fmt.amount(raw, resourceAddress), resource: fmt.resource(resourceAddress) });
+  const feeLine = operation?.maxFee !== undefined ? [t("approve.maxFee", { fee: fmt.fee(String(operation.maxFee)) })] : [];
   switch (operation?.kind) {
     case "instructions":
-      return describeRequest("tari_signAndSubmitTransaction", operation as unknown as Record<string, unknown>);
+      return describeRequest("tari_signAndSubmitTransaction", operation as unknown as Record<string, unknown>, fmt);
     case "withdrawStealthAndExecute":
       return [
-        t("approve.revealFor", { amount: operation.amount, resource: shortId(operation.resourceAddress) }),
+        t("approve.revealFor", of(operation.amount, operation.resourceAddress)),
+        ...feeLine,
         ...summarizeInstructionArray(operation.followUpInstructions),
       ];
     case "redeemStealthOutputAndExecute":
       return [
-        t("approve.redeem", {
-          commitment: shortId(operation.commitmentHex),
-          amount: operation.revealedAmount,
-          resource: shortId(operation.resourceAddress),
-        }),
+        t("approve.redeem", { commitment: shortId(operation.commitmentHex), ...of(operation.revealedAmount, operation.resourceAddress) }),
+        ...feeLine,
         ...summarizeInstructionArray(operation.followUpInstructions),
       ];
     case "redeemStealthOutputWithPrivateFee":
       return [
-        t("approve.redeem", {
-          commitment: shortId(operation.commitmentHex),
-          amount: operation.revealedAmount,
-          resource: shortId(operation.resourceAddress),
-        }),
+        t("approve.redeem", { commitment: shortId(operation.commitmentHex), ...of(operation.revealedAmount, operation.resourceAddress) }),
         t("approve.privateFee", { commitment: shortId(operation.feeCommitmentHex) }),
+        ...feeLine,
         ...summarizeInstructionArray(operation.followUpInstructions),
       ];
     case "shield":
       return [
-        t("approve.shield", { amount: operation.amount, resource: shortId(operation.resourceAddress) }),
+        t("approve.shield", of(operation.amount, operation.resourceAddress)),
         t("approve.staysHere"),
+        ...feeLine,
         // Stated outright, not left to be inferred from a field name. Shielding is the act of making
         // value invisible; a promise puts a permanent public floor back on it, for everyone, for as
         // long as the output lives. Someone approving a "move to private" must not discover
         // afterwards that they also published a number.
-        ...promiseLines(operation.minimumValuePromise, t("approve.promiseNewOutput")),
+        ...promiseLines(operation.minimumValuePromise, t("approve.promiseNewOutput"), fmt.amount(operation.minimumValuePromise ?? "0", operation.resourceAddress)),
       ];
     case "depositConfidential":
       return [
-        t("approve.depositConfidential", { amount: operation.amount, resource: shortId(operation.resourceAddress) }),
+        t("approve.depositConfidential", of(operation.amount, operation.resourceAddress)),
         t("approve.staysHere"),
         t("approve.confidentialNote"),
+        ...feeLine,
       ];
     case "unshield":
       return [
-        t("approve.unshield", { amount: operation.revealedAmount, resource: shortId(operation.resourceAddress) }),
+        t("approve.unshield", of(operation.revealedAmount, operation.resourceAddress)),
         t("approve.becomesVisible"),
+        ...feeLine,
       ];
     case "sendPrivately":
       return [
-        t("approve.sendPrivately", { amount: operation.amount, resource: shortId(operation.resourceAddress) }),
+        t("approve.sendPrivately", of(operation.amount, operation.resourceAddress)),
         t("approve.to", { address: shortId(operation.recipientWalletAddress) }),
         t("approve.hiddenOnChain"),
-        ...promiseLines(operation.minimumValuePromise, t("approve.promiseRecipientOutput")),
+        ...feeLine,
+        ...promiseLines(operation.minimumValuePromise, t("approve.promiseRecipientOutput"), fmt.amount(operation.minimumValuePromise ?? "0", operation.resourceAddress)),
       ];
     case "htlcFund":
       return [
-        t("approve.htlcLock", { amount: operation.amount, resource: shortId(operation.resourceAddress) }),
+        t("approve.htlcLock", of(operation.amount, operation.resourceAddress)),
         t("approve.htlcClaimable", { claimant: shortId(operation.claimantWalletAddress), epoch: operation.refundEpoch }),
         t("approve.htlcRefundable"),
+        ...feeLine,
       ];
     case "htlcClaim":
       return [
-        t("approve.htlcClaim", { resource: shortId(operation.resourceAddress) }),
+        t("approve.htlcClaim", { resource: fmt.resource(operation.resourceAddress) }),
         t("approve.htlcRevealsSecret"),
+        ...feeLine,
       ];
     case "htlcRefund":
       return [
-        t("approve.htlcRefund", { amount: operation.amount, resource: shortId(operation.resourceAddress) }),
+        t("approve.htlcRefund", of(operation.amount, operation.resourceAddress)),
         t("approve.htlcRefundAfter"),
+        ...feeLine,
       ];
     default:
       return [t("approve.unrecognised")];

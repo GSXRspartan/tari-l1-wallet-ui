@@ -9,6 +9,7 @@ import { decipherSeed } from "tari-cipherseed";
 import { defaultIndexerUrl, getVaultIdsForAccount } from "@tari-project/ootle";
 import { OOTLE_NETWORK, OotleAccount, toOotleNetwork, type TokenBalance } from "../ootle";
 import { hexToBytes } from "./cipherseed";
+import { decodeEvent } from "./bor";
 
 /** Account index on the L2 side. The extension wallet supports several; this UI shows the first. */
 const ACCOUNT_INDEX = 0;
@@ -124,7 +125,9 @@ export async function fetchL2Deposits(identity: L2Identity, known: (key: string)
       const url = `${base}/transactions/events?substate_id=${vaultId}&limit=${EVENT_PAGE}&offset=${page * EVENT_PAGE}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`indexer ${res.status}`);
-      const { events } = (await res.json()) as { events: VaultEvent[] };
+      // From Ootle 0.48 each event is a base64 CBOR `Event`; decodeEvent passes the old JSON through.
+      const { events: raw } = (await res.json()) as { events: Array<[string, unknown]> };
+      const events = raw.map(([txId, ev]) => [txId, decodeEvent<VaultEvent[1]>(ev)] as VaultEvent);
       for (const [txId, ev] of events) {
         if (ev.topic === "std.vault.pay_fee") feePaid.add(txId);
         const sign = ev.topic === "std.vault.deposit" ? 1n : ev.topic === "std.vault.withdraw" ? -1n : 0n;
