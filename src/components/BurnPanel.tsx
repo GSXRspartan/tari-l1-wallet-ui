@@ -43,6 +43,7 @@ export function BurnPanel() {
   const [amount, setAmount] = useState("");
   const [feePerGram, setFeePerGram] = useState("5");
   const [acknowledged, setAcknowledged] = useState(false);
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false);
   const [stage, setStage] = useState<Stage>("form");
   const [justBurned, setJustBurned] = useState<{ amount: bigint } | null>(null);
 
@@ -79,7 +80,9 @@ export function BurnPanel() {
   const selection = amountMicro && fpg && amountMicro > 0n ? selectInputs(inputLikes, amountMicro, fpg) : null;
   const maxSpend = fpg ? estimateMaxSpend(inputLikes, fpg) : 0n;
   const receiveMicro = amountMicro && amountMicro > CLAIM_FEE_MICRO ? amountMicro - CLAIM_FEE_MICRO : 0n;
-  const canReview = claimKeyValid && !!selection && receiveMicro > 0n && acknowledged;
+  // Where no Ootle observes this L1 (mainnet today) a burn destroys the coins with no claim
+  // available, so that risk gets its own explicit acknowledgment rather than riding on the general one.
+  const canReview = claimKeyValid && !!selection && receiveMicro > 0n && acknowledged && (claimable || riskAcknowledged);
 
   async function burn() {
     if (!store.wallet || !claimKey || !amountMicro || !fpg || !selection) return;
@@ -149,6 +152,7 @@ export function BurnPanel() {
       setStage("done");
       setAmount("");
       setAcknowledged(false);
+      setRiskAcknowledged(false);
     } catch (e) {
       setStage("review");
       toast({ tone: "error", title: t("burn.failed"), message: e instanceof Error ? e.message : String(e) });
@@ -343,6 +347,18 @@ export function BurnPanel() {
             {t("burn.acknowledge", { symbol })} {destination === "other" && t("burn.wrongKeyLoses")}
           </span>
         </label>
+
+        {!claimable && (
+          <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-[var(--st-red)]/30 bg-[var(--st-red)]/10 px-4 py-3 text-xs leading-relaxed text-[var(--tari-text)]">
+            <input
+              type="checkbox"
+              checked={riskAcknowledged}
+              onChange={(e) => setRiskAcknowledged(e.target.checked)}
+              className="mt-0.5 accent-[var(--st-red)]"
+            />
+            <span>{t("burn.ackNotClaimable", { network: networkLabel(store.network), symbol })}</span>
+          </label>
+        )}
 
         <Button size="lg" className="w-full" disabled={!canReview} onClick={() => setStage("review")}>
           {t("burn.reviewTitle")}
