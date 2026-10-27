@@ -30,7 +30,7 @@ import { fetchChainTip } from "./lib/explorer";
 import { burnClaimedOnOotle, deriveL2Identity, fetchL2Balances, fetchL2Deposits, type L2Identity } from "./lib/l2";
 import { attributePayment, deriveSubAddress, type SubAddress } from "./lib/subaddress";
 import { OOTLE_NETWORK, TARI_RESOURCE_ADDRESS, toOotleNetwork, wipeOotleState, type TokenBalance } from "./ootle";
-import { decryptWithPin, encryptWithPin, type EncryptedBlob } from "./lib/pinLock";
+import { decryptWithPin, encryptWithPin, needsRekey, type EncryptedBlob } from "./lib/pinLock";
 import {
   AUTO_NODE_ID,
   configureRpcForNetwork,
@@ -791,6 +791,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     wallet?.free();
     setWallet(null);
     setBackupHex(null);
+    // The L2 account holds its own owner and view secrets; locking must drop it too. It is
+    // re-derived from the seed after unlock.
+    setL2({ identity: null, balances: [], loading: false, error: null });
     setLockedAddressHint(addressInfo?.base58 ?? null);
     setAddressInfo(null);
     setWalletLocked(true);
@@ -801,6 +804,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!encBackup || !network) return false;
       const hex = await decryptWithPin(encBackup, pin);
       if (hex === null) return false;
+      // A blob from before Argon2id is moved onto it now that the PIN is known.
+      if (needsRekey(encBackup)) setEncBackup(await encryptWithPin(hex, pin));
       try {
         const w = WasmWallet.fromBackupHex(hex, network);
         const pending = pendingPersistedRef.current;
@@ -1398,14 +1403,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [layer, l2Address]);
 
+  // Derives the L2 account on arrival at L2, and again after an unlock (lock() drops it).
+  useEffect(() => {
+    if (layer === "L2" && backupHex) refreshL2Ref.current();
+  }, [layer, backupHex]);
+
   const setLayer = useCallback(
     (next: Layer) => {
       setLayerState(next);
       setPendingLayer(null);
-      // Derive on first arrival rather than at wallet load: an L1-only user never pays for it.
-      if (next === "L2") refreshL2();
+      // The L2 account is derived on arrival (see the layer/backupHex effect above), not at
+      // wallet load: an L1-only user never pays for it.
     },
-    [refreshL2],
+    [],
   );
 
   // Lives here rather than in the Dashboard so any surface can ask for the switch — the L2 panel's
