@@ -36,7 +36,51 @@
   "use strict";
 
   var PROTOCOL = "tari-dapp-bridge/1";
-  var embedded = window.parent !== window;
+
+  // Wallets this page will talk to. Requests carry secrets (an HTLC preimage, memos) and replies are
+  // trusted as the wallet's word, so any other page framing this dApp must get neither. A wallet
+  // hosted elsewhere is added by setting `window.TARI_WALLET_ORIGINS = [...]` before this script.
+  var KNOWN_WALLET_ORIGINS = ["https://universe.tari.mw", "http://localhost:5173", "http://127.0.0.1:5173"].concat(
+    Array.isArray(window.TARI_WALLET_ORIGINS) ? window.TARI_WALLET_ORIGINS : [],
+  );
+  var WALLET_ORIGIN_KEY = "tari-connector:wallet-origin";
+
+  // The embedding page's origin: `ancestorOrigins` where the browser has it, else the referrer the
+  // wallet sends (`strict-origin`). After a navigation inside the frame the referrer is this dApp's
+  // own previous page, so the origin found on the first page is kept in sessionStorage, which is
+  // per tab and per top-level page -- another site framing this dApp gets a fresh one.
+  function detectParentOrigin() {
+    try {
+      if (window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+        return window.location.ancestorOrigins[0];
+      }
+    } catch (e) {
+      /* fall through */
+    }
+    var fromReferrer = null;
+    try {
+      if (document.referrer) fromReferrer = new URL(document.referrer).origin;
+    } catch (e) {
+      /* fall through */
+    }
+    if (fromReferrer && fromReferrer !== window.location.origin) return fromReferrer;
+    try {
+      return window.sessionStorage.getItem(WALLET_ORIGIN_KEY);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  var framed = window.parent !== window;
+  var parentOrigin = framed ? detectParentOrigin() : null;
+  var embedded = framed && parentOrigin !== null && KNOWN_WALLET_ORIGINS.indexOf(parentOrigin) !== -1;
+  if (embedded) {
+    try {
+      window.sessionStorage.setItem(WALLET_ORIGIN_KEY, parentOrigin);
+    } catch (e) {
+      /* storage unavailable: the referrer check above still runs on every page */
+    }
+  }
 
   var pending = Object.create(null);
   var counter = 0;
@@ -50,19 +94,19 @@
   function request(method, params) {
     if (!embedded) {
       return Promise.reject(
-        new Error("Tari wallet unavailable: this page is not running inside Tari Universe"),
+        new Error(
+          framed
+            ? "Tari wallet unavailable: this page is framed by " + (parentOrigin || "an unknown site") + ", which is not a known Tari wallet"
+            : "Tari wallet unavailable: this page is not running inside Tari Universe",
+        ),
       );
     }
     return new Promise(function (resolve, reject) {
       var id = nextId();
       pending[id] = { resolve: resolve, reject: reject };
-      // Targeted at "*" deliberately and only here: the dApp cannot know the wallet's origin ahead
-      // of time, and the payload is a request the wallet must still authorise. Replies are the
-      // other direction and ARE origin-checked, below.
-      window.parent.postMessage(
-        { protocol: PROTOCOL, id: id, method: method, params: params || {} },
-        "*",
-      );
+      // Only to the wallet's exact origin: if anything else has replaced the parent page, the
+      // browser drops the message rather than handing it the request.
+      window.parent.postMessage({ protocol: PROTOCOL, id: id, method: method, params: params || {} }, parentOrigin);
     });
   }
 
@@ -71,7 +115,7 @@
     if (!data || data.protocol !== PROTOCOL) return;
 
     // Only the wallet frame that embedded this page may answer.
-    if (event.source !== window.parent) return;
+    if (event.source !== window.parent || event.origin !== parentOrigin) return;
 
     if (data.event) {
       var handlers = listeners[data.event] || [];

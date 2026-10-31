@@ -19,6 +19,7 @@
  */
 import { TARI_RESOURCE_ADDRESS, type FeeType, type OotleAccount } from "../ootle";
 import type { TransactionRequestOperation } from "./dappBridge";
+import { ownAccountCalls } from "./dappPreview";
 
 /** How long an approved-but-unsubmitted request stays submittable. Matches the extension's 15
  * minutes: long enough for a human to be interrupted mid-decision, short enough that a stale
@@ -51,9 +52,17 @@ interface RequestRecord {
   expiresAt: number;
   result?: unknown;
   error?: string;
+  /** For an htlcClaim: the funded output's value as the approval dialog showed it (raw units). */
+  previewedHtlcValue?: string;
 }
 
 const records = new Map<string, RequestRecord>();
+
+/** Remembers the HTLC value the approval dialog showed, while the request is still pending. */
+export function setPreviewedHtlcValue(requestId: string, value: string): void {
+  const record = records.get(requestId);
+  if (record && record.status === "pending") record.previewedHtlcValue = value;
+}
 
 /** Bounds memory for a long-lived wallet session that a busy dApp keeps creating requests in.
  * Oldest-first eviction; a request old enough to be evicted is well past its TTL and unsubmittable
@@ -184,7 +193,24 @@ async function resolveFeeType(feeType: "private" | "transparent" | undefined): P
  * the wallet's own decision from its local ledger of stealth outputs, and the dApp supplies only an
  * amount.
  */
-export async function executeOperation(account: OotleAccount, operation: TransactionRequestOperation): Promise<unknown> {
+export async function executeOperation(
+  account: OotleAccount,
+  operation: TransactionRequestOperation,
+  extras: { previewedHtlcValue?: string } = {},
+): Promise<unknown> {
+  // These kinds exist to spend one bounded amount (the revealed bucket); their follow-up
+  // instructions run under this account's own signature, so a withdraw (or any non-deposit call)
+  // on the account itself would spend beyond what the approval stated.
+  if (
+    operation.kind === "withdrawStealthAndExecute" ||
+    operation.kind === "redeemStealthOutputAndExecute" ||
+    operation.kind === "redeemStealthOutputWithPrivateFee"
+  ) {
+    const calls = ownAccountCalls(operation.followUpInstructions, await account.getComponentAddress());
+    if (calls.length > 0) {
+      throw new Error(`Refused: this request's follow-up instructions call "${calls[0]}" on your own account, which this kind of request may not do.`);
+    }
+  }
   const maxFee = operation.maxFee !== undefined ? BigInt(operation.maxFee) : undefined;
   const feeType =
     operation.kind === "redeemStealthOutputWithPrivateFee" ? undefined : await resolveFeeType(operation.feeType);
@@ -267,6 +293,9 @@ export async function executeOperation(account: OotleAccount, operation: Transac
         operation.preimageHex,
         maxFee,
         feeType,
+        // The amount the approval dialog showed, when it showed one: the pre-claim check then
+        // refuses to reveal the preimage for an output worth anything else.
+        extras.previewedHtlcValue !== undefined ? { expected: { amount: BigInt(extras.previewedHtlcValue) } } : {},
       );
     case "htlcRefund":
       return account.htlcRefund(

@@ -47,14 +47,10 @@ export const CATALOG: CatalogEntry[] = [
     tag: "Reference",
   },
   {
-    url: "https://xtm-market.johnnytsunami14.chatgpt.site",
-    name: "XTM Market",
-    description: "Browse goods priced and settled in XTM on Tari Ootle, with live USD reference values.",
-    // The site's own favicon, inlined: a data: URI needs no cross-origin fetch, so it can't be
-    // blocked by the dApp's CSP or go stale like a hotlinked image would.
-    image:
-      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0d11'/%3E%3Cpath d='M13 19h38l-4 28H17z' fill='none' stroke='%2368f0c5' stroke-width='5'/%3E%3Cpath d='M23 25c0-8 18-8 18 0' fill='none' stroke='%23ffb85c' stroke-width='5'/%3E%3C/svg%3E",
-    tag: "Marketplace",
+    url: "https://voting.tari.mw",
+    name: "Privote",
+    description: "Confidential ranked-choice voting on Tari Ootle — stealth ballots and a trustless IRV tally, so how you voted stays private.",
+    tag: "Voting",
   },
 ];
 

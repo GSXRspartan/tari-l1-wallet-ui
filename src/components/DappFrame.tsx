@@ -22,6 +22,8 @@ import {
   originOf,
   revokeConnection,
   revokeViewAccess,
+  type ApprovalFormatter,
+  type TransactionRequestOperation,
 } from "../lib/dappBridge";
 import {
   claimForSubmit,
@@ -31,11 +33,16 @@ import {
   getRecord,
   parseOperation,
   recordDecision,
+  setPreviewedHtlcValue,
   settle,
   summarize,
 } from "../lib/dappRequests";
+import { previewOperation, type RawPreview } from "../lib/dappPreview";
 import { hostOf } from "../lib/dapps";
-import { OOTLE_NETWORK } from "../ootle";
+import { OOTLE_NETWORK, TARI_RESOURCE_ADDRESS, formatResourceAmount, type TokenBalance } from "../ootle";
+
+/** TARI's on-chain divisibility on Ootle -- the fee is always paid in it. */
+const TARI_DIVISIBILITY = 6;
 import { Badge, Button, Switch } from "./ui";
 import { t } from "../i18n";
 import { withL2Log } from "../lib/l2history";
@@ -55,7 +62,68 @@ interface ApprovalState {
    * from `feeTypeChoiceRef` at decide-time, never from this object (which never changes after the
    * dialog opens). */
   feeChoice?: { enforced: boolean; initial: "private" | "transparent" };
+  /** What a simulation says the request does to the account -- "loading" while it runs. Absent for
+   * requests the wallet builds itself, whose summary already states exactly what moves. */
+  preview?: PreviewLines | "loading";
   decide: (approved: boolean) => void;
+}
+
+interface PreviewLines {
+  lines: string[];
+  warnings: string[];
+}
+
+/** Approve stays disabled this long after a dialog appears, so a click aimed at the dApp (a
+ * "double-click here" lure timed to the request) can't land on it. */
+const APPROVE_ARM_DELAY_MS = 800;
+/** Caps on the scan budgets a dApp may ask for -- each page is one or more indexer round trips. */
+const MAX_DAPP_SCAN_PAGES = 20;
+const MAX_DAPP_SCAN_PAGE_SIZE = 100;
+const clampScan = (n: unknown, max: number): number | undefined =>
+  typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), max) : undefined;
+
+function shortAddr(value: string): string {
+  return value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-6)}` : value;
+}
+
+/** Amounts in the approval dialog at their real scale: TARI and every token the account holds. */
+function approvalFormatter(balances: TokenBalance[]): ApprovalFormatter {
+  const meta = (r: string) => balances.find((b) => b.resourceAddress === r);
+  const divisibility = (r: string) => (r === TARI_RESOURCE_ADDRESS ? TARI_DIVISIBILITY : meta(r)?.divisibility);
+  const amount = (raw: string, r: string) => {
+    try {
+      const d = divisibility(r);
+      return d === undefined ? `${BigInt(raw)} base units of` : formatResourceAmount(BigInt(raw), d);
+    } catch {
+      return raw;
+    }
+  };
+  return {
+    amount,
+    // A token's symbol is whatever its creator chose, so anything but TARI also shows its address.
+    resource: (r) => (r === TARI_RESOURCE_ADDRESS ? "TARI" : meta(r)?.symbol ? `${meta(r)!.symbol} (${shortAddr(r)})` : shortAddr(r)),
+    fee: (raw) => `${amount(raw, TARI_RESOURCE_ADDRESS)} TARI`,
+  };
+}
+
+/** Turns a simulation into dialog lines, amounts formatted. */
+function previewLines(raw: RawPreview, fmt: ApprovalFormatter): PreviewLines {
+  const lines: string[] = [];
+  const warnings: string[] = [];
+  const show = (delta: bigint, r: string) => `${fmt.amount((delta < 0n ? -delta : delta).toString(), r)} ${fmt.resource(r)}`;
+  if (raw.htlc) {
+    if (raw.htlc.value !== null && raw.htlcResource) lines.push(t("frame.previewHtlcValue", { amount: show(raw.htlc.value, raw.htlcResource) }));
+    for (const problem of raw.htlc.problems) warnings.push(t("frame.previewHtlcProblem", { problem }));
+  }
+  if (raw.simulated) {
+    if (raw.wouldFail) warnings.push(t("frame.previewWouldFail", { error: raw.wouldFail }));
+    for (const [r, delta] of raw.changes) lines.push(t(delta < 0n ? "frame.previewSends" : "frame.previewReceives", { amount: show(delta, r) }));
+    if (raw.changes.size === 0 && !raw.wouldFail) lines.push(t("frame.previewNoChanges"));
+  } else if (raw.error && !raw.htlc) {
+    warnings.push(t("frame.previewUnavailable", { error: raw.error }));
+  }
+  for (const method of raw.ownAccountCalls) warnings.push(t("frame.previewOwnAccountCall", { method }));
+  return { lines, warnings };
 }
 
 /**
@@ -78,9 +146,20 @@ export function DappFrame({
   const store = useStore();
   const frameRef = useRef<HTMLIFrameElement>(null);
   const origin = useMemo(() => originOf(url), [url]);
+  // A page on the wallet's own origin, framed with allow-scripts + allow-same-origin, IS the wallet:
+  // it could read its storage and reach into this window. Such a URL is never framed or bridged.
+  const sameOrigin = origin === window.location.origin;
   const [connected, setConnected] = useState(() => (origin ? isConnected(origin) : false));
   const [viewAccess, setViewAccess] = useState(() => (origin ? hasViewAccess(origin) : false));
   const [approval, setApproval] = useState<ApprovalState | null>(null);
+  const [approveArmed, setApproveArmed] = useState(false);
+  const approvalId = approval?.id ?? null;
+  useEffect(() => {
+    setApproveArmed(false);
+    if (!approvalId) return;
+    const timer = setTimeout(() => setApproveArmed(true), APPROVE_ARM_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [approvalId]);
   /** Mirrors `feeTypeChoiceRef` for rendering — a ref alone wouldn't re-render the toggle. Reset
    * whenever a new approval opens (including one with no `feeChoice` at all, where it's unused). */
   const [feeTypeDisplay, setFeeTypeDisplay] = useState<"private" | "transparent">("transparent");
@@ -144,7 +223,13 @@ export function DappFrame({
       id: string,
       method: BridgeMethod,
       params: Record<string, unknown>,
-      options: { tone?: ApprovalState["tone"]; summary?: string[]; feeChoice?: ApprovalState["feeChoice"] } = {},
+      options: {
+        tone?: ApprovalState["tone"];
+        summary?: string[];
+        feeChoice?: ApprovalState["feeChoice"];
+        /** Simulates the request once its dialog is showing; `null` = nothing to preview. */
+        previewer?: () => Promise<PreviewLines | null>;
+      } = {},
     ) => {
       const answered = promptQueue.current.then(
         () =>
@@ -157,11 +242,22 @@ export function DappFrame({
               summary: options.summary ?? describeRequest(method, params),
               tone: options.tone ?? "spend",
               feeChoice: options.feeChoice,
+              preview: options.previewer ? "loading" : undefined,
               decide: (approved) => {
                 setApproval(null);
                 resolve(approved);
               },
             });
+            if (options.previewer) {
+              const settlePreview = (preview: PreviewLines | undefined) =>
+                setApproval((current) => (current && current.id === id ? { ...current, preview } : current));
+              options
+                .previewer()
+                .then((p) => settlePreview(p ?? undefined))
+                .catch((e: unknown) =>
+                  settlePreview({ lines: [], warnings: [t("frame.previewUnavailable", { error: e instanceof Error ? e.message : String(e) })] }),
+                );
+            }
           }),
       );
       // Swallowed so one rejected link cannot break the chain and silently skip every later prompt.
@@ -384,7 +480,7 @@ export function DappFrame({
               };
             }
             case "tari_scanForPrivatePayments": {
-              const maxPages = typeof params.maxPages === "number" ? params.maxPages : undefined;
+              const maxPages = clampScan(params.maxPages, MAX_DAPP_SCAN_PAGES);
               const { claimed, found } = await account.scanForPrivatePayments(maxPages);
               // Refreshed because a scan that finds anything changes the balance the wallet's own
               // panel is showing — a dApp shouldn't be able to move the user's funds into view
@@ -395,10 +491,12 @@ export function DappFrame({
             case "tari_scanForResourceUtxos": {
               const resourceAddress = String(params.resourceAddress ?? "");
               if (!resourceAddress) return { error: ERROR.internal("resourceAddress is required") };
-              const maxPages = typeof params.maxPages === "number" ? params.maxPages : undefined;
-              const pageSize = typeof params.pageSize === "number" ? params.pageSize : undefined;
+              const maxPages = clampScan(params.maxPages, MAX_DAPP_SCAN_PAGES);
+              const pageSize = clampScan(params.pageSize, MAX_DAPP_SCAN_PAGE_SIZE);
               const limit = typeof params.limit === "number" ? params.limit : undefined;
-              const transactionIds = Array.isArray(params.transactionIds) ? (params.transactionIds as string[]) : undefined;
+              const transactionIds = Array.isArray(params.transactionIds)
+                ? (params.transactionIds as string[]).slice(0, MAX_DAPP_SCAN_PAGE_SIZE)
+                : undefined;
               const found = await account.scanForResourceUtxos(resourceAddress, { maxPages, pageSize, limit, transactionIds });
               // Same reasoning as tari_scanForPrivatePayments above: a scan that discovers real
               // outputs must be reflected in the wallet's own view, not only handed to the dApp.
@@ -432,8 +530,15 @@ export function DappFrame({
             // fields would ask someone to authorise a description that isn't the transaction.
             return { error: ERROR.internal(e instanceof Error ? e.message : String(e)) };
           }
-          const summary = describeOperation(operation);
+          const fmt = approvalFormatter(s.l2.balances);
+          const summary = describeOperation(operation, fmt);
           const requestId = createRequest(origin, operation, summary.join(" · "));
+          const previewer = async () => {
+            const raw = await previewOperation(account, operation);
+            if (!raw) return null;
+            if (raw.htlc?.value != null) setPreviewedHtlcValue(requestId, raw.htlc.value.toString());
+            return previewLines(raw, approvalFormatter(storeRef.current.l2.balances));
+          };
           // Absent for `redeemStealthOutputWithPrivateFee`, which has no `feeType` field (already
           // always private). Otherwise seeded from the dApp's own `feeType` hint if it gave one,
           // else this wallet's own default -- `enforced` locks the dialog's toggle instead of
@@ -449,7 +554,7 @@ export function DappFrame({
           // Deliberately not awaited. `create` answers with the id straight away so a dApp that
           // reloads while the user is deciding can still find the request; awaiting here would put
           // the whole flow back inside one promise that a reload destroys.
-          void askUser(requestId, req.method, params, { summary, feeChoice }).then((approved) =>
+          void askUser(requestId, req.method, params, { summary, feeChoice, previewer }).then((approved) =>
             recordDecision(requestId, approved, feeChoice ? feeTypeChoiceRef.current ?? feeChoice.initial : undefined),
           );
           return { result: { requestId } };
@@ -467,7 +572,7 @@ export function DappFrame({
         try {
           const op = claim.record.operation as { kind?: string };
           const result = await withL2Log(s.l2.identity?.address, { kind: "dapp", counterparty: origin ?? undefined, note: op.kind }, () =>
-            executeOperation(account, claim.record.operation),
+            executeOperation(account, claim.record.operation, { previewedHtlcValue: claim.record.previewedHtlcValue }),
           );
           settle(claim.record.id, { result });
           storeRef.current.refreshL2();
@@ -500,11 +605,21 @@ export function DappFrame({
 
         let summary;
         try {
-          summary = describeRequest(req.method, params);
+          summary = describeRequest(req.method, params, approvalFormatter(s.l2.balances));
         } catch (e) {
           return { error: ERROR.internal(e instanceof Error ? e.message : String(e)) };
         }
-        const approved = await askUser(req.id, req.method, params, { summary });
+        const asOperation: TransactionRequestOperation = {
+          kind: "instructions",
+          instructions,
+          maxFee: params.maxFee !== undefined ? String(params.maxFee) : undefined,
+          inputs,
+        };
+        const previewer = async () => {
+          const raw = await previewOperation(account, asOperation);
+          return raw ? previewLines(raw, approvalFormatter(storeRef.current.l2.balances)) : null;
+        };
+        const approved = await askUser(req.id, req.method, params, { summary, previewer });
         if (!approved) return { error: ERROR.rejected };
         try {
           const result = await withL2Log(s.l2.identity?.address, { kind: "dapp", counterparty: origin ?? undefined, note: "instructions" }, () =>
@@ -525,7 +640,7 @@ export function DappFrame({
   );
 
   useEffect(() => {
-    if (!origin) return;
+    if (!origin || sameOrigin) return;
     const onMessage = (event: MessageEvent) => {
       // Both checks matter: the origin alone would accept a message from any other frame or tab
       // on that origin, and the source alone would accept this frame after it navigated somewhere
@@ -541,7 +656,7 @@ export function DappFrame({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [origin, handle, reply]);
+  }, [origin, sameOrigin, handle, reply]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -654,6 +769,20 @@ export function DappFrame({
       </div>
 
       <div className="relative min-h-0 flex-1">
+        {sameOrigin ? (
+          <div className="absolute inset-0 grid place-items-center p-6 text-center" style={{ background: "var(--tari-bg-panel)" }}>
+            <div>
+              <ShieldAlert size={22} className="mx-auto mb-2 text-[var(--st-amber)]" />
+              <p className="font-semibold text-[var(--tari-text)]">{t("frame.sameOrigin")}</p>
+              <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-[var(--tari-text-dim)]">
+                {t("frame.sameOriginBody", { host: hostOf(url) })}
+              </p>
+              <Button size="sm" className="mt-4" onClick={() => window.open(url, "_blank", "noopener,noreferrer")}>
+                <ExternalLink size={13} /> {t("frame.openInTab")}
+              </Button>
+            </div>
+          </div>
+        ) : (
         <iframe
           ref={frameRef}
           src={url}
@@ -687,8 +816,9 @@ export function DappFrame({
           referrerPolicy="strict-origin"
           className="h-full w-full border-0 bg-white"
         />
+        )}
 
-        {blocked && !loaded && (
+        {blocked && !loaded && !sameOrigin && (
           <div
             className="absolute inset-0 grid place-items-center p-6 text-center"
             style={{ background: "var(--tari-bg-panel)" }}
@@ -737,6 +867,27 @@ export function DappFrame({
                   </li>
                 ))}
               </ul>
+              {approval.preview && (
+                <div className="mt-4 rounded-xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)] p-2.5">
+                  <p className="mb-1.5 text-[11px] font-semibold text-[var(--tari-text-dim)]">{t("frame.previewTitle")}</p>
+                  {approval.preview === "loading" ? (
+                    <p className="text-xs text-[var(--tari-text-dim)]">{t("frame.previewLoading")}</p>
+                  ) : (
+                    <>
+                      {approval.preview.lines.map((line, i) => (
+                        <p key={i} className="text-xs leading-relaxed text-[var(--tari-text)]">
+                          {line}
+                        </p>
+                      ))}
+                      {approval.preview.warnings.map((line, i) => (
+                        <p key={`w${i}`} className="mt-1 text-xs leading-relaxed text-[var(--st-amber)]">
+                          {line}
+                        </p>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
               {approval.feeChoice && (
                 <div className="mt-4 rounded-xl border border-[var(--tari-border)] bg-[var(--tari-bg-input)] p-2.5">
                   <p className="mb-1.5 text-[11px] font-semibold text-[var(--tari-text-dim)]">{t("frame.feePayment")}</p>
@@ -775,7 +926,7 @@ export function DappFrame({
                 </p>
               )}
               <div className="mt-4 flex gap-2.5">
-                <Button className="flex-1" onClick={() => approval.decide(true)}>
+                <Button className="flex-1" disabled={!approveArmed} onClick={() => approveArmed && approval.decide(true)}>
                   {approval.tone === "connect" ? t("frame.connect") : approval.tone === "view" ? t("frame.showBalance") : t("frame.approve")}
                 </Button>
                 <Button variant="outline" className="flex-1" onClick={() => approval.decide(false)}>

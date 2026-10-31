@@ -41,9 +41,22 @@ const SUBMIT_RATE_LIMIT = 10;
 const rateBuckets = new Map();
 let activeRequests = 0;
 
+// Behind nginx every connection comes from loopback, so the socket address would put every user in
+// one shared bucket -- one client could then rate-limit everyone. The edge middleware stamps the
+// real client address as x-client-ip; it is trusted only on a loopback (proxied) connection.
+function clientKey(req) {
+  const socketAddress = req.socket.remoteAddress || "unknown";
+  const proxied = socketAddress === "127.0.0.1" || socketAddress === "::1" || socketAddress === "::ffff:127.0.0.1";
+  const forwarded = req.headers["x-client-ip"];
+  return proxied && typeof forwarded === "string" && forwarded.length > 0 && forwarded.length <= 64 ? forwarded : socketAddress;
+}
+
 function allowRequest(req, limit) {
   const now = Date.now();
-  const key = req.socket.remoteAddress || "unknown";
+  if (rateBuckets.size > 10_000) {
+    for (const [k, b] of rateBuckets) if (now >= b.resetAt) rateBuckets.delete(k);
+  }
+  const key = clientKey(req);
   const bucket = rateBuckets.get(key);
   if (!bucket || now >= bucket.resetAt) {
     rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
@@ -265,7 +278,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/blocks") {
       const from = Number(url.searchParams.get("from"));
       let to = Number(url.searchParams.get("to") ?? from);
-      if (!Number.isFinite(from) || from <= 0 || to < from) {
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from <= 0 || to < from) {
         return json(req, res, 400, { error: "invalid range" });
       }
       to = Math.min(to, from + MAX_BLOCK_BATCH - 1);
