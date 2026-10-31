@@ -13,7 +13,7 @@ Every claim below cites one of these. Line numbers refer to these exact revision
 
 | Tag | Source | Revision |
 | --- | --- | --- |
-| **WTU** | `chironbuilds/tari-l1-wallet-ui` `master` | `3ee0a3141e1cfa2c4c1735c80bda3e8a39f8be2c` |
+| **WTU** | `chironbuilds/tari-l1-wallet-ui` `master` | `3ee0a3172b62a9eed92661ae6e7b9ef170be2e24` |
 | **WASM** | `chironbuilds/tari-l1-wasm` (source of `vendor/tari-l1-wasm`) | `e23e4c9ea956818ae28e3b8978b8c1b2ca3cf727` |
 | **T601** | `tari-project/tari` tag `v6.0.1-pre.2` | `44ffb862ee970f3bc0ff41fef362d49fdfcc8ff6` |
 | **T620** | `tari-project/tari` tag `v6.2.0` | `3bcb607f1e725c50693aba381b7574dece5fd3b9` |

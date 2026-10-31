@@ -17,7 +17,7 @@ or v1 response must be rejected as `UnsupportedWireVersion`.
 
 | Item | Revision |
 | --- | --- |
-| Web TU base (`chironbuilds/tari-l1-wallet-ui` `master`) | `3ee0a3141e1cfa2c4c1735c80bda3e8a39f8be2c` |
+| Web TU base (`chironbuilds/tari-l1-wallet-ui` `master`) | `3ee0a3172b62a9eed92661ae6e7b9ef170be2e24` |
 | v3 reference implementation (`GSXRspartan/ggbp1-v3-external-review`) | `2ff24577603002e294d89bc604b889db0380a728` |
 | v3 core source `ggbp1-v3-review/src/lib.rs` | SHA-256 `01f4ccad3885e5984d7aff68646aa54c2282a84cb86817650903bbda6bbfeb69` |
 | Normative v3 documents | `V3_PROTOCOL.md`, `CHAIN_BOUNDARY.md`, `AUTHORIZATION_BOUNDARY.md`, `OUTPUT_USE_POLICY.md` in that repository |
