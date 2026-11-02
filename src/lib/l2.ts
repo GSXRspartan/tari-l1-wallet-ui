@@ -9,7 +9,7 @@ import { decipherSeed } from "tari-cipherseed";
 import { defaultIndexerUrl, getVaultIdsForAccount } from "@tari-project/ootle";
 import { OOTLE_NETWORK, OotleAccount, toOotleNetwork, type TokenBalance } from "../ootle";
 import { hexToBytes } from "./cipherseed";
-import { decodeEvent } from "./bor";
+import { decodeEvent, decodeSubstateValue } from "./bor";
 
 /** Account index on the L2 side. The extension wallet supports several; this UI shows the first. */
 const ACCOUNT_INDEX = 0;
@@ -70,8 +70,10 @@ export async function burnClaimedOnOotle(commitmentHex: string): Promise<bigint 
   const res = await fetch(`${base}/substates/tombstone_${commitmentHex.toLowerCase()}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`indexer ${res.status}`);
-  const body = (await res.json()) as { substate?: { ClaimedOutputTombstone?: { value?: number | string } } };
-  const value = body.substate?.ClaimedOutputTombstone?.value;
+  // 0.48+: `{ state: { up: { substate: <base64 CBOR> } } }`; older indexers: `{ substate: {...} }`.
+  const body = (await res.json()) as { substate?: unknown; state?: { up?: { substate?: unknown } } };
+  const decoded = decodeSubstateValue<{ ClaimedOutputTombstone?: { value?: number | string } } | undefined>(body.state?.up?.substate ?? body.substate);
+  const value = decoded?.ClaimedOutputTombstone?.value;
   if (value === undefined) throw new Error("unexpected tombstone substate");
   return BigInt(value);
 }
@@ -115,7 +117,7 @@ export async function fetchL2Deposits(identity: L2Identity, known: (key: string)
   const base = defaultIndexerUrl(toOotleNetwork(OOTLE_NETWORK));
   const out: L2Deposit[] = [];
   for (const vaultId of vaultIds) {
-    const value = substates[vaultId]?.substate as { Vault?: { resource_container: Record<string, { address?: string }> } } | undefined;
+    const value = decodeSubstateValue(substates[vaultId]?.value) as { Vault?: { resource_container: Record<string, { address?: string }> } } | undefined;
     const container = value?.Vault ? Object.values(value.Vault.resource_container)[0] : undefined;
     const resourceAddress = container?.address ?? null;
     const order: string[] = [];
