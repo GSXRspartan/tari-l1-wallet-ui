@@ -1097,6 +1097,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         b.map((r) => (r.id === id ? { ...r, status: "claiming", lastError: undefined, lastAttemptAt: Date.now() } : r)),
       );
       try {
+        // Claimed already (an earlier attempt that landed, or another wallet): don't send a claim
+        // the engine is bound to reject. An unreachable indexer decides nothing; the claim goes ahead.
+        const already = await burnClaimedOnOotle(rec.parts.commitmentHex).catch(() => null);
+        if (already !== null) {
+          markClaimedElsewhere(id, already);
+          return;
+        }
         const identity = await deriveL2Identity(backupHex);
         const entry = { kind: "claimBurn" as const, amount: rec.amountMicro, divisibility: 6, symbol: "tTARI" };
         // An automatic attempt that fails is just the wallet checking again, not something the user
@@ -1119,7 +1126,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         // Claimed already -- by another wallet holding the proof, or an earlier attempt that did land.
-        if (/already claimed/i.test(message)) {
+        // Ootle 0.49 reports it as "Substate tombstone_<commitment> already exists".
+        if (/already claimed|tombstone_[0-9a-f]+ already exists/i.test(message)) {
           markClaimedElsewhere(id);
           return;
         }

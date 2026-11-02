@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { decodeSubstateResponse, decodeTransactionResultResponse } from "../lib/bor";
 import { createPortal } from "react-dom";
 import { ExternalLink, Eye, Maximize2, Minimize2, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useStore } from "../store";
@@ -434,15 +435,17 @@ export function DappFrame({
           case "tari_getSubstate": {
             const provider = await account.getProvider();
             return {
-              result: await provider.getSubstate(
-                String(params.substateId ?? ""),
-                (params.version as number | null | undefined) ?? null,
+              result: decodeSubstateResponse(
+                await provider.getSubstate(
+                  String(params.substateId ?? ""),
+                  (params.version as number | null | undefined) ?? null,
+                ),
               ),
             };
           }
           case "tari_getTransactionResult": {
             const provider = await account.getProvider();
-            return { result: await provider.getTransactionResult(String(params.transactionId ?? "")) };
+            return { result: decodeTransactionResultResponse(await provider.getTransactionResult(String(params.transactionId ?? ""))) };
           }
         }
       }
